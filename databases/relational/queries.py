@@ -74,7 +74,7 @@ def example_query() -> dict:
             cur.execute("SELECT current_database() AS db;")
             return dict(cur.fetchone())
 
-# TODO: Implement the query_ and execute_ functions below.
+# Relational QUERY and transaction functions implementation.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -114,7 +114,12 @@ def query_national_rail_availability(
                 - origin_stop.travel_time_from_origin_min AS travel_time_min,
             COUNT(seat.id) AS total_seats,
             COUNT(active_booking.id) AS booked_seats,
-            COUNT(seat.id) - COUNT(active_booking.id) AS available_seats
+            COUNT(seat.id) - COUNT(active_booking.id) AS available_seats,
+            CASE
+                WHEN COUNT(seat.id) = 0 THEN 'not_configured'
+                WHEN COUNT(seat.id) - COUNT(active_booking.id) = 0 THEN 'sold_out'
+                ELSE 'available'
+            END AS availability_status
         FROM national_rail_schedules s
         JOIN national_rail_schedule_stops origin_stop
             ON origin_stop.national_rail_schedule_pk = s.id
