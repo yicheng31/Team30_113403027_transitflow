@@ -6,8 +6,10 @@ Then open: http://localhost:7860
 """
 
 import sys
+from pathlib import Path
 
-sys.path.insert(0, ".")
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR))
 
 import gradio as gr
 
