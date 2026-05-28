@@ -353,7 +353,18 @@ def _execute_tool(
             result = query_national_rail_availability(**params)
 
         elif tool_name == "get_national_rail_fare":
-            result = query_national_rail_fare(**params)
+            stops_travelled = params.get("stops_travelled")
+            try:
+                params["stops_travelled"] = int(stops_travelled)
+            except (TypeError, ValueError):
+                result = query_national_rail_schedule_fares(params["schedule_id"])
+                if params.get("fare_class"):
+                    result = [
+                        row for row in result
+                        if str(row.get("fare_class")) == str(params["fare_class"])
+                    ]
+            else:
+                result = query_national_rail_fare(**params)
 
         elif tool_name == "get_national_rail_schedule_fares":
             result = query_national_rail_schedule_fares(params["schedule_id"])
