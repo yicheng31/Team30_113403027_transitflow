@@ -1,3 +1,9 @@
+/**
+ * @Author: Your name
+ * @Date:   2026-05-28 14:29:40
+ * @Last Modified by:   Your name
+ * @Last Modified time: 2026-05-28 18:08:28
+ */
 -- ============================================================
 --  TransitFlow PostgreSQL Schema
 --  Seed data is loaded separately by: python skeleton/seed_postgres.py

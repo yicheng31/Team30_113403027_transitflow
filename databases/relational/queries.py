@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Author: Your name
+# @Date:   2026-05-28 14:29:40
+# @Last Modified by:   Your name
+# @Last Modified time: 2026-05-28 18:08:33
 """
 TransitFlow — PostgreSQL / Relational Database Layer
 =====================================================
@@ -448,6 +453,7 @@ def query_user_profile(user_email: str) -> Optional[dict]:
             is_active
         FROM registered_users
         WHERE email = %s
+          AND is_active = TRUE
     """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -495,6 +501,7 @@ def query_user_bookings(user_email: str) -> dict:
         JOIN national_rail_seats seat
             ON seat.id = booking.national_rail_seat_pk
         WHERE users.email = %s
+          AND users.is_active = TRUE
         ORDER BY booking.travel_date DESC, booking.departure_time DESC
     """
     metro_sql = """
@@ -524,6 +531,7 @@ def query_user_bookings(user_email: str) -> dict:
         JOIN metro_stations destination
             ON destination.id = trip.destination_station_pk
         WHERE users.email = %s
+          AND users.is_active = TRUE
         ORDER BY trip.travel_date DESC, trip.purchased_at DESC
     """
     with _connect() as conn:
@@ -886,7 +894,8 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             cur.execute(
                 """
                 UPDATE national_rail_bookings
-                SET status = 'cancelled'
+                SET status = 'cancelled',
+                    cancelled_at = COALESCE(cancelled_at, NOW())
                 WHERE id = %s
                 """,
                 (booking["booking_pk"],),
@@ -918,6 +927,39 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
 
 
 # ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────
+
+def execute_deactivate_user(user_id: str) -> bool:
+    """Soft delete a user account while keeping bookings, payments, and feedback history."""
+    sql = """
+        UPDATE registered_users
+        SET is_active = FALSE,
+            deactivated_at = COALESCE(deactivated_at, NOW())
+        WHERE user_id = %s
+          AND is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (user_id,))
+            return cur.rowcount > 0
+
+
+def execute_cancel_metro_trip(trip_id: str, user_id: str) -> bool:
+    """Soft delete/cancel a metro trip record owned by a user."""
+    sql = """
+        UPDATE metro_trips trip
+        SET status = 'cancelled',
+            cancelled_at = COALESCE(cancelled_at, NOW())
+        FROM registered_users users
+        WHERE users.id = trip.user_pk
+          AND trip.trip_id = %s
+          AND users.user_id = %s
+          AND trip.status <> 'cancelled'
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (trip_id, user_id))
+            return cur.rowcount > 0
+
 
 def register_user(
     email: str,
