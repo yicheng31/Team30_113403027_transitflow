@@ -72,6 +72,18 @@ def _gen_user_id() -> str:
 # Use _connect() for read-only queries; for write operations use a manual
 # connection with conn.commit() / conn.rollback() (see execute_booking below).
 
+def _positive_int_or_none(value) -> Optional[int]:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _normalise_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
 def example_query() -> dict:
     """Example: returns the name of the connected database."""
     with _connect() as conn:
@@ -175,7 +187,8 @@ def query_national_rail_fare(
     Returns:
         dict with fare_class, base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
-    if stops_travelled <= 0:
+    stops_travelled = _positive_int_or_none(stops_travelled)
+    if stops_travelled is None:
         return None
 
     sql = """
@@ -319,7 +332,8 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
     Returns:
         dict with base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
-    if stops_travelled <= 0:
+    stops_travelled = _positive_int_or_none(stops_travelled)
+    if stops_travelled is None:
         return None
 
     sql = """
@@ -344,7 +358,8 @@ def query_metro_fare_estimate(stops_travelled: int) -> Optional[dict]:
     This is used when route planning comes from Neo4j and there is no single
     direct metro schedule covering the full journey.
     """
-    if stops_travelled <= 0:
+    stops_travelled = _positive_int_or_none(stops_travelled)
+    if stops_travelled is None:
         return None
 
     sql = """
@@ -440,6 +455,7 @@ def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[
 
 def query_user_profile(user_email: str) -> Optional[dict]:
     """Return a user's profile by email."""
+    user_email = _normalise_email(user_email)
     sql = """
         SELECT
             user_id,
@@ -469,6 +485,7 @@ def query_user_bookings(user_email: str) -> dict:
     Returns:
         dict with keys 'national_rail' (list) and 'metro' (list)
     """
+    user_email = _normalise_email(user_email)
     rail_sql = """
         SELECT
             booking.booking_id,
@@ -545,6 +562,7 @@ def query_user_bookings(user_email: str) -> dict:
 
 def query_payment_info(booking_id: str, user_email: str) -> Optional[dict]:
     """Return payment record for a booking or metro trip owned by the user."""
+    user_email = _normalise_email(user_email)
     sql = """
         SELECT
             payment.payment_id,
@@ -615,6 +633,12 @@ def execute_booking(
         (True, booking_dict)   on success
         (False, error_message) on failure
     """
+    seat_id = (seat_id or "any").strip()
+    if seat_id.lower() == "any":
+        seat_id = "any"
+    else:
+        seat_id = seat_id.upper()
+
     conn = psycopg2.connect(PG_DSN)
     conn.autocommit = False
     try:
@@ -976,6 +1000,7 @@ def register_user(
 
     Passwords are stored as Argon2id hashes.
     """
+    email = _normalise_email(email)
     conn = psycopg2.connect(PG_DSN)
     conn.autocommit = False
     try:
@@ -1038,6 +1063,7 @@ def login_user(email: str, password: str) -> Optional[dict]:
     Verify credentials. Returns a user dict on success or None on failure.
     Dict keys: user_id, email, full_name, first_name, surname, phone, date_of_birth, is_active.
     """
+    email = _normalise_email(email)
     sql = """
         SELECT
             users.user_id,
@@ -1072,6 +1098,7 @@ def login_user(email: str, password: str) -> Optional[dict]:
 
 def get_user_secret_question(email: str) -> Optional[str]:
     """Return the secret question for a registered email, or None if not found."""
+    email = _normalise_email(email)
     sql = """
         SELECT auth.secret_question
         FROM registered_users users
@@ -1089,6 +1116,7 @@ def get_user_secret_question(email: str) -> Optional[str]:
 
 def verify_secret_answer(email: str, answer: str) -> bool:
     """Return True if the provided answer matches the stored secret answer (case-insensitive)."""
+    email = _normalise_email(email)
     sql = """
         SELECT auth.secret_answer
         FROM registered_users users
@@ -1108,6 +1136,7 @@ def verify_secret_answer(email: str, answer: str) -> bool:
 
 def update_password(email: str, new_password: str) -> bool:
     """Update the password for a user. Returns True if the row was updated."""
+    email = _normalise_email(email)
     sql = """
         UPDATE user_auth_credentials auth
         SET password_hash = %s

@@ -110,11 +110,12 @@ CREATE TABLE IF NOT EXISTS registered_users (
     user_id        VARCHAR(20) NOT NULL UNIQUE,
     first_name     VARCHAR(80) NOT NULL,
     surname        VARCHAR(80) NOT NULL,
-    email          VARCHAR(150) NOT NULL UNIQUE,
+    email          VARCHAR(150) NOT NULL,
     phone          VARCHAR(30),
     date_of_birth  DATE,
     registered_at  TIMESTAMPTZ NOT NULL,
-    is_active      BOOLEAN NOT NULL DEFAULT TRUE
+    is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+    deactivated_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS user_auth_credentials (
@@ -287,7 +288,8 @@ CREATE TABLE IF NOT EXISTS national_rail_bookings (
     amount_usd                 NUMERIC(8, 2) NOT NULL CHECK (amount_usd >= 0),
     status                     booking_status_enum NOT NULL,
     booked_at                  TIMESTAMPTZ NOT NULL,
-    travelled_at               TIMESTAMPTZ
+    travelled_at               TIMESTAMPTZ,
+    cancelled_at               TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS metro_trips (
@@ -309,7 +311,8 @@ CREATE TABLE IF NOT EXISTS metro_trips (
     amount_usd             NUMERIC(8, 2) NOT NULL CHECK (amount_usd >= 0),
     status                 metro_trip_status_enum NOT NULL,
     purchased_at           TIMESTAMPTZ,
-    travelled_at           TIMESTAMPTZ
+    travelled_at           TIMESTAMPTZ,
+    cancelled_at           TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS payments (
@@ -337,6 +340,18 @@ ADD COLUMN IF NOT EXISTS refunded_amount_usd NUMERIC(8, 2) NOT NULL DEFAULT 0 CH
 
 ALTER TABLE payments
 ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ;
+
+ALTER TABLE registered_users
+DROP CONSTRAINT IF EXISTS registered_users_email_key;
+
+ALTER TABLE registered_users
+ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+
+ALTER TABLE national_rail_bookings
+ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+
+ALTER TABLE metro_trips
+ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS feedback (
     id                       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -384,6 +399,10 @@ ON national_rail_bookings (national_rail_schedule_pk, travel_date, status);
 
 CREATE INDEX IF NOT EXISTS idx_national_rail_seats_schedule_class
 ON national_rail_seats (national_rail_schedule_pk, fare_class);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_registered_users_email
+ON registered_users (LOWER(email))
+WHERE is_active = TRUE;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_national_rail_seat_booking
 ON national_rail_bookings (national_rail_schedule_pk, travel_date, national_rail_seat_pk)
