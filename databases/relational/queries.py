@@ -192,6 +192,68 @@ def query_national_rail_fare(
             return dict(row) if row else None
 
 
+def query_national_rail_schedule_fares(schedule_id: str) -> list[dict]:
+    """
+    Return all fare classes for a national rail schedule using the full route.
+
+    This supports questions such as "How much is NR_SCH04?" where the user gives
+    only a schedule id and expects the ticket price for that service.
+    """
+    sql = """
+        WITH route_span AS (
+            SELECT
+                schedule.id AS schedule_pk,
+                MIN(stop.stop_sequence) AS first_stop_sequence,
+                MAX(stop.stop_sequence) AS last_stop_sequence,
+                MAX(stop.stop_sequence) - MIN(stop.stop_sequence) AS stops_travelled,
+                MIN(stop.travel_time_from_origin_min) AS first_stop_time_min,
+                MAX(stop.travel_time_from_origin_min) AS last_stop_time_min
+            FROM national_rail_schedules schedule
+            JOIN national_rail_schedule_stops stop
+                ON stop.national_rail_schedule_pk = schedule.id
+            WHERE schedule.schedule_id = %s
+            GROUP BY schedule.id
+        )
+        SELECT
+            schedule.schedule_id,
+            schedule.line,
+            schedule.service_type,
+            schedule.direction,
+            origin.station_id AS origin_station_id,
+            origin.name AS origin_name,
+            destination.station_id AS destination_station_id,
+            destination.name AS destination_name,
+            schedule.first_train_time::text,
+            schedule.last_train_time::text,
+            route_span.stops_travelled,
+            route_span.last_stop_time_min - route_span.first_stop_time_min AS travel_time_min,
+            fare.fare_class,
+            fare.base_fare_usd,
+            fare.per_stop_rate_usd,
+            fare.base_fare_usd + (route_span.stops_travelled * fare.per_stop_rate_usd)
+                AS total_fare_usd
+        FROM national_rail_schedules schedule
+        JOIN route_span
+            ON route_span.schedule_pk = schedule.id
+        JOIN national_rail_stations origin
+            ON origin.id = schedule.origin_station_pk
+        JOIN national_rail_stations destination
+            ON destination.id = schedule.destination_station_pk
+        JOIN national_rail_fares fare
+            ON fare.national_rail_schedule_pk = schedule.id
+        ORDER BY
+            CASE fare.fare_class
+                WHEN 'standard' THEN 1
+                WHEN 'first' THEN 2
+                ELSE 3
+            END
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (schedule_id,))
+            return [dict(row) for row in cur.fetchall()]
+
+
 # ── METRO SCHEDULES & FARE ────────────────────────────────────────────────────
 
 def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
@@ -471,8 +533,8 @@ def query_user_bookings(user_email: str) -> dict:
             return {"national_rail": national_rail, "metro": metro}
 
 
-def query_payment_info(booking_id: str) -> Optional[dict]:
-    """Return payment record for a booking or metro trip."""
+def query_payment_info(booking_id: str, user_email: str) -> Optional[dict]:
+    """Return payment record for a booking or metro trip owned by the user."""
     sql = """
         SELECT
             payment.payment_id,
@@ -482,22 +544,34 @@ def query_payment_info(booking_id: str) -> Optional[dict]:
                 ELSE 'metro'
             END AS network_type,
             payment.amount_usd,
+            payment.refunded_amount_usd,
             payment.method,
             payment.status,
-            payment.paid_at
+            payment.paid_at,
+            payment.refunded_at
         FROM payments payment
         LEFT JOIN national_rail_bookings booking
             ON booking.id = payment.national_rail_booking_pk
+        LEFT JOIN registered_users booking_user
+            ON booking_user.id = booking.user_pk
         LEFT JOIN metro_trips trip
             ON trip.id = payment.metro_trip_pk
-        WHERE booking.booking_id = %s
-           OR trip.trip_id = %s
+        LEFT JOIN registered_users trip_user
+            ON trip_user.id = trip.user_pk
+        WHERE (
+                booking.booking_id = %s
+                AND booking_user.email = %s
+              )
+           OR (
+                trip.trip_id = %s
+                AND trip_user.email = %s
+              )
         ORDER BY payment.paid_at DESC
         LIMIT 1
     """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, (booking_id, booking_id))
+            cur.execute(sql, (booking_id, user_email, booking_id, user_email))
             row = cur.fetchone()
             return dict(row) if row else None
 
@@ -815,10 +889,12 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
                 cur.execute(
                     """
                     UPDATE payments
-                    SET status = 'refunded'
+                    SET status = 'refunded',
+                        refunded_amount_usd = %s,
+                        refunded_at = NOW()
                     WHERE id = %s
                     """,
-                    (booking["payment_pk"],),
+                    (refund_amount, booking["payment_pk"]),
                 )
             conn.commit()
             return True, {

@@ -253,6 +253,8 @@ CREATE TABLE IF NOT EXISTS payments (
     metro_trip_pk            BIGINT
         REFERENCES metro_trips(id),
     amount_usd               NUMERIC(8, 2) NOT NULL CHECK (amount_usd >= 0),
+    refunded_amount_usd      NUMERIC(8, 2) NOT NULL DEFAULT 0 CHECK (refunded_amount_usd >= 0),
+    refunded_at              TIMESTAMPTZ,
     method                   VARCHAR(30) NOT NULL CHECK (method IN ('credit_card', 'debit_card', 'ewallet')),
     status                   VARCHAR(20) NOT NULL CHECK (status IN ('paid', 'refunded', 'failed')),
     paid_at                  TIMESTAMPTZ NOT NULL,
@@ -262,6 +264,12 @@ CREATE TABLE IF NOT EXISTS payments (
         (national_rail_booking_pk IS NULL AND metro_trip_pk IS NOT NULL)
     )
 );
+
+ALTER TABLE payments
+ADD COLUMN IF NOT EXISTS refunded_amount_usd NUMERIC(8, 2) NOT NULL DEFAULT 0 CHECK (refunded_amount_usd >= 0);
+
+ALTER TABLE payments
+ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS feedback (
     id                       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
