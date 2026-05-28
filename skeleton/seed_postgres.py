@@ -29,11 +29,13 @@ PASSWORD_HASHER = PasswordHasher()
 
 
 def load(filename):
+    """Load one JSON fixture file from train-mock-data."""
     with open(os.path.join(DATA_DIR, filename), encoding="utf-8") as f:
         return json.load(f)
 
 
 def connect():
+    """Open a PostgreSQL connection using the project config values."""
     return psycopg2.connect(
         host=cfg.PG_HOST,
         port=cfg.PG_PORT,
@@ -56,6 +58,7 @@ def insert_many(cur, table, columns, rows):
 
 
 def get_id(cur, table, code_column, code_value):
+    """Resolve an external mock-data code to the table's internal primary key."""
     cur.execute(f"SELECT id FROM {table} WHERE {code_column} = %s", (code_value,))
     row = cur.fetchone()
     if row is None:
@@ -64,6 +67,7 @@ def get_id(cur, table, code_column, code_value):
 
 
 def split_full_name(full_name):
+    """Split a display name into first name and surname fields."""
     parts = full_name.split(" ", 1)
     first_name = parts[0]
     surname = parts[1] if len(parts) > 1 else ""
@@ -73,6 +77,7 @@ def split_full_name(full_name):
 # ── seeders ──────────────────────────────────────────────────────────────────
 
 def seed_metro_stations(cur):
+    """Seed metro stations plus their line and interchange-line mappings."""
     data = load("metro_stations.json")
     rows = [
         (
@@ -109,6 +114,7 @@ def seed_metro_stations(cur):
 
 
 def seed_national_rail_stations(cur):
+    """Seed national rail stations, line mappings, and metro interchange links."""
     data = load("national_rail_stations.json")
     rows = [
         (
@@ -162,6 +168,7 @@ def seed_national_rail_stations(cur):
 
 
 def seed_metro_schedules(cur):
+    """Seed metro schedules with ordered stops and operating days."""
     data = load("metro_schedules.json")
     rows = []
     stop_rows = []
@@ -234,6 +241,7 @@ def seed_metro_schedules(cur):
 
 
 def seed_national_rail_schedules(cur):
+    """Seed national rail schedules with stops, operating days, and fares."""
     data = load("national_rail_schedules.json")
     rows = []
     stop_rows = []
@@ -329,6 +337,7 @@ def seed_national_rail_schedules(cur):
 
 
 def seed_seat_layouts(cur):
+    """Seed each national rail schedule's seats, coaches, and fare class layout."""
     data = load("national_rail_seat_layouts.json")
     rows = []
     for layout in data:
@@ -364,6 +373,7 @@ def seed_seat_layouts(cur):
 
 
 def seed_users(cur):
+    """Seed registered users and their hashed authentication credentials."""
     data = load("registered_users.json")
     user_rows = []
     for item in data:
@@ -417,6 +427,7 @@ def seed_users(cur):
 
 
 def seed_national_rail_bookings(cur):
+    """Seed historical national rail bookings with stored fare and payment amount."""
     data = load("bookings.json")
     rows = []
     for item in data:
@@ -488,6 +499,7 @@ def seed_national_rail_bookings(cur):
 
 
 def seed_metro_travels(cur):
+    """Seed historical metro trips with stored fare and payment amount."""
     data = load("metro_travel_history.json")
     rows = []
     for item in data:
@@ -540,6 +552,7 @@ def seed_metro_travels(cur):
 
 
 def seed_payments(cur):
+    """Seed payments and link each one to either a rail booking or metro trip."""
     data = load("payments.json")
     rows = []
     for item in data:
@@ -582,6 +595,7 @@ def seed_payments(cur):
 
 
 def seed_feedback(cur):
+    """Seed user feedback for completed rail bookings and metro trips."""
     data = load("feedback.json")
     rows = []
     for item in data:
@@ -627,6 +641,7 @@ def seed_feedback(cur):
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    """Run the full PostgreSQL seed process in dependency order."""
     print("Connecting to PostgreSQL...")
     conn = connect()
     conn.autocommit = False

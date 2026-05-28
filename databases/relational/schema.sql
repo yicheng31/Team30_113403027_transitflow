@@ -44,6 +44,7 @@
 
 DO $$
 BEGIN
+    -- Calendar values used by schedule operating-day tables.
     CREATE TYPE day_of_week_enum AS ENUM ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -51,6 +52,7 @@ END $$;
 
 DO $$
 BEGIN
+    -- National rail service categories supported by the mock schedules.
     CREATE TYPE rail_service_type_enum AS ENUM ('normal', 'express');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -58,6 +60,7 @@ END $$;
 
 DO $$
 BEGIN
+    -- Fare classes used by both seats and fare calculation.
     CREATE TYPE fare_class_enum AS ENUM ('standard', 'first');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -65,6 +68,7 @@ END $$;
 
 DO $$
 BEGIN
+    -- Ticket types supported for national rail bookings.
     CREATE TYPE rail_ticket_type_enum AS ENUM ('single', 'return');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -72,6 +76,7 @@ END $$;
 
 DO $$
 BEGIN
+    -- Ticket types supported for metro trip purchases.
     CREATE TYPE metro_ticket_type_enum AS ENUM ('single', 'day_pass');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -79,6 +84,7 @@ END $$;
 
 DO $$
 BEGIN
+    -- Booking lifecycle states; cancelled rows are retained for history.
     CREATE TYPE booking_status_enum AS ENUM ('confirmed', 'completed', 'cancelled');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -86,6 +92,7 @@ END $$;
 
 DO $$
 BEGIN
+    -- Metro trip lifecycle states; cancelled rows are retained for history.
     CREATE TYPE metro_trip_status_enum AS ENUM ('completed', 'cancelled');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -93,6 +100,7 @@ END $$;
 
 DO $$
 BEGIN
+    -- Payment methods exposed by the mock dataset.
     CREATE TYPE payment_method_enum AS ENUM ('credit_card', 'debit_card', 'ewallet');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -100,11 +108,13 @@ END $$;
 
 DO $$
 BEGIN
+    -- Payment lifecycle states used for paid and refunded transactions.
     CREATE TYPE payment_status_enum AS ENUM ('paid', 'refunded', 'failed');
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
 
+-- Registered customer profile data. Soft-deleted users keep history through is_active/deactivated_at.
 CREATE TABLE IF NOT EXISTS registered_users (
     id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id        VARCHAR(20) NOT NULL UNIQUE,
@@ -118,6 +128,7 @@ CREATE TABLE IF NOT EXISTS registered_users (
     deactivated_at TIMESTAMPTZ
 );
 
+-- Authentication data is separated from profile fields so login details stay isolated.
 CREATE TABLE IF NOT EXISTS user_auth_credentials (
     user_pk         BIGINT PRIMARY KEY
         REFERENCES registered_users(id),
@@ -126,6 +137,7 @@ CREATE TABLE IF NOT EXISTS user_auth_credentials (
     secret_answer   TEXT NOT NULL
 );
 
+-- Metro station master data from the mock network.
 CREATE TABLE IF NOT EXISTS metro_stations (
     id                            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     station_id                    VARCHAR(20) NOT NULL UNIQUE,
@@ -134,6 +146,7 @@ CREATE TABLE IF NOT EXISTS metro_stations (
     is_interchange_national_rail  BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+-- National rail station master data from the mock network.
 CREATE TABLE IF NOT EXISTS national_rail_stations (
     id                             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     station_id                     VARCHAR(20) NOT NULL UNIQUE,
@@ -142,6 +155,7 @@ CREATE TABLE IF NOT EXISTS national_rail_stations (
     is_interchange_metro           BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+-- Physical interchange links between metro stations and national rail stations.
 CREATE TABLE IF NOT EXISTS station_interchanges (
     metro_station_pk         BIGINT NOT NULL
         REFERENCES metro_stations(id),
@@ -150,6 +164,7 @@ CREATE TABLE IF NOT EXISTS station_interchanges (
     PRIMARY KEY (metro_station_pk, national_rail_station_pk)
 );
 
+-- Metro lines served by each metro station.
 CREATE TABLE IF NOT EXISTS metro_station_lines (
     metro_station_pk BIGINT NOT NULL
         REFERENCES metro_stations(id),
@@ -157,6 +172,7 @@ CREATE TABLE IF NOT EXISTS metro_station_lines (
     PRIMARY KEY (metro_station_pk, line)
 );
 
+-- Additional metro lines available through station interchanges.
 CREATE TABLE IF NOT EXISTS metro_interchange_lines (
     metro_station_pk BIGINT NOT NULL
         REFERENCES metro_stations(id),
@@ -164,6 +180,7 @@ CREATE TABLE IF NOT EXISTS metro_interchange_lines (
     PRIMARY KEY (metro_station_pk, line)
 );
 
+-- National rail lines served by each national rail station.
 CREATE TABLE IF NOT EXISTS national_rail_station_lines (
     national_rail_station_pk BIGINT NOT NULL
         REFERENCES national_rail_stations(id),
@@ -171,6 +188,7 @@ CREATE TABLE IF NOT EXISTS national_rail_station_lines (
     PRIMARY KEY (national_rail_station_pk, line)
 );
 
+-- Additional rail lines available through national rail interchanges.
 CREATE TABLE IF NOT EXISTS national_rail_interchange_lines (
     national_rail_station_pk BIGINT NOT NULL
         REFERENCES national_rail_stations(id),
@@ -178,6 +196,7 @@ CREATE TABLE IF NOT EXISTS national_rail_interchange_lines (
     PRIMARY KEY (national_rail_station_pk, line)
 );
 
+-- Metro schedule header data, including fare formula and service frequency.
 CREATE TABLE IF NOT EXISTS metro_schedules (
     id                     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     schedule_id            VARCHAR(30) NOT NULL UNIQUE,
@@ -194,6 +213,7 @@ CREATE TABLE IF NOT EXISTS metro_schedules (
     frequency_min          INTEGER NOT NULL CHECK (frequency_min > 0)
 );
 
+-- Ordered stop list for each metro schedule, used to validate route direction.
 CREATE TABLE IF NOT EXISTS metro_schedule_stops (
     metro_schedule_pk           BIGINT NOT NULL
         REFERENCES metro_schedules(id),
@@ -205,6 +225,7 @@ CREATE TABLE IF NOT EXISTS metro_schedule_stops (
     UNIQUE (metro_schedule_pk, metro_station_pk)
 );
 
+-- Days of the week when each metro schedule operates.
 CREATE TABLE IF NOT EXISTS metro_schedule_operating_days (
     metro_schedule_pk BIGINT NOT NULL
         REFERENCES metro_schedules(id),
@@ -212,6 +233,7 @@ CREATE TABLE IF NOT EXISTS metro_schedule_operating_days (
     PRIMARY KEY (metro_schedule_pk, day_of_week)
 );
 
+-- National rail schedule header data, including service type and frequency.
 CREATE TABLE IF NOT EXISTS national_rail_schedules (
     id                     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     schedule_id            VARCHAR(30) NOT NULL UNIQUE,
@@ -227,6 +249,7 @@ CREATE TABLE IF NOT EXISTS national_rail_schedules (
     frequency_min          INTEGER NOT NULL CHECK (frequency_min > 0)
 );
 
+-- Ordered stop list for each rail schedule, used for availability and fare stops.
 CREATE TABLE IF NOT EXISTS national_rail_schedule_stops (
     national_rail_schedule_pk   BIGINT NOT NULL
         REFERENCES national_rail_schedules(id),
@@ -238,6 +261,7 @@ CREATE TABLE IF NOT EXISTS national_rail_schedule_stops (
     UNIQUE (national_rail_schedule_pk, national_rail_station_pk)
 );
 
+-- Days of the week when each national rail schedule operates.
 CREATE TABLE IF NOT EXISTS national_rail_schedule_operating_days (
     national_rail_schedule_pk BIGINT NOT NULL
         REFERENCES national_rail_schedules(id),
@@ -245,6 +269,7 @@ CREATE TABLE IF NOT EXISTS national_rail_schedule_operating_days (
     PRIMARY KEY (national_rail_schedule_pk, day_of_week)
 );
 
+-- Fare formula per national rail schedule and fare class.
 CREATE TABLE IF NOT EXISTS national_rail_fares (
     national_rail_schedule_pk BIGINT NOT NULL
         REFERENCES national_rail_schedules(id),
@@ -254,6 +279,7 @@ CREATE TABLE IF NOT EXISTS national_rail_fares (
     PRIMARY KEY (national_rail_schedule_pk, fare_class)
 );
 
+-- Seat inventory per national rail schedule and fare class.
 CREATE TABLE IF NOT EXISTS national_rail_seats (
     id                        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     national_rail_schedule_pk BIGINT NOT NULL
@@ -266,6 +292,7 @@ CREATE TABLE IF NOT EXISTS national_rail_seats (
     UNIQUE (national_rail_schedule_pk, seat_id)
 );
 
+-- National rail booking transactions. fare_usd stores the fare at booking time.
 CREATE TABLE IF NOT EXISTS national_rail_bookings (
     id                         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     booking_id                 VARCHAR(30) NOT NULL UNIQUE,
@@ -292,6 +319,7 @@ CREATE TABLE IF NOT EXISTS national_rail_bookings (
     cancelled_at               TIMESTAMPTZ
 );
 
+-- Metro trip transactions. fare_usd stores the fare at purchase time.
 CREATE TABLE IF NOT EXISTS metro_trips (
     id                     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     trip_id                VARCHAR(30) NOT NULL UNIQUE,
@@ -315,6 +343,7 @@ CREATE TABLE IF NOT EXISTS metro_trips (
     cancelled_at           TIMESTAMPTZ
 );
 
+-- Payment transactions linked to exactly one rail booking or metro trip.
 CREATE TABLE IF NOT EXISTS payments (
     id                       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     payment_id               VARCHAR(30) NOT NULL UNIQUE,
@@ -335,24 +364,28 @@ CREATE TABLE IF NOT EXISTS payments (
     )
 );
 
+-- Backfill-compatible additions for refund tracking on existing databases.
 ALTER TABLE payments
 ADD COLUMN IF NOT EXISTS refunded_amount_usd NUMERIC(8, 2) NOT NULL DEFAULT 0 CHECK (refunded_amount_usd >= 0);
 
 ALTER TABLE payments
 ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ;
 
+-- Replace global email uniqueness with active-user uniqueness so soft-deleted emails can be reused.
 ALTER TABLE registered_users
 DROP CONSTRAINT IF EXISTS registered_users_email_key;
 
 ALTER TABLE registered_users
 ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
 
+-- Backfill-compatible cancellation timestamps for transaction soft deletes.
 ALTER TABLE national_rail_bookings
 ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
 
 ALTER TABLE metro_trips
 ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
 
+-- Feedback submitted by users for either a rail booking or a metro trip.
 CREATE TABLE IF NOT EXISTS feedback (
     id                       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     feedback_id              VARCHAR(30) NOT NULL UNIQUE,
@@ -400,10 +433,12 @@ ON national_rail_bookings (national_rail_schedule_pk, travel_date, status);
 CREATE INDEX IF NOT EXISTS idx_national_rail_seats_schedule_class
 ON national_rail_seats (national_rail_schedule_pk, fare_class);
 
+-- Only active accounts must have unique emails; inactive accounts keep historical email values.
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_registered_users_email
 ON registered_users (LOWER(email))
 WHERE is_active = TRUE;
 
+-- A seat can be sold once per schedule/date unless the previous booking was cancelled.
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_national_rail_seat_booking
 ON national_rail_bookings (national_rail_schedule_pk, travel_date, national_rail_seat_pk)
 WHERE status <> 'cancelled';
@@ -433,6 +468,7 @@ WHERE metro_trip_pk IS NOT NULL;
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- Help-desk policy documents used for vector similarity search.
 CREATE TABLE IF NOT EXISTS policy_documents (
     id          SERIAL       PRIMARY KEY,
     title       VARCHAR(200) NOT NULL,

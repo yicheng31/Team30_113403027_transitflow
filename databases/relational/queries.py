@@ -2,7 +2,7 @@
 # @Author: Your name
 # @Date:   2026-05-28 14:29:40
 # @Last Modified by:   Your name
-# @Last Modified time: 2026-05-28 18:08:33
+# @Last Modified time: 2026-05-28 20:19:30
 """
 TransitFlow — PostgreSQL / Relational Database Layer
 =====================================================
@@ -53,16 +53,19 @@ def _connect():
 
 
 def _gen_booking_id() -> str:
+    """Create a short external booking code for new national rail bookings."""
     suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
     return f"BK-{suffix}"
 
 
 def _gen_payment_id() -> str:
+    """Create a short external payment code for newly inserted payments."""
     suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
     return f"PM-{suffix}"
 
 
 def _gen_user_id() -> str:
+    """Create a short external user code for newly registered users."""
     suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
     return f"RU-{suffix}"
 
@@ -73,6 +76,7 @@ def _gen_user_id() -> str:
 # connection with conn.commit() / conn.rollback() (see execute_booking below).
 
 def _positive_int_or_none(value) -> Optional[int]:
+    """Convert a value to a positive integer, or return None for invalid input."""
     try:
         number = int(value)
     except (TypeError, ValueError):
@@ -81,6 +85,7 @@ def _positive_int_or_none(value) -> Optional[int]:
 
 
 def _normalise_email(email: str) -> str:
+    """Apply the shared email format used for lookup and uniqueness checks."""
     return (email or "").strip().lower()
 
 
@@ -479,7 +484,7 @@ def query_user_profile(user_email: str) -> Optional[dict]:
 
 
 def query_user_bookings(user_email: str) -> dict:
-    """
+    """     
     Return a user's combined booking history (national rail + metro).
 
     Returns:
