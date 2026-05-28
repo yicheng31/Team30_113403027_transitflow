@@ -728,6 +728,12 @@ JSON:"""
         if debug:
             debug_info.append(f"**Fallback:** {reason} -> {name}({params})")
 
+    def _fallback_many(calls: list[dict], reason: str) -> None:
+        nonlocal tool_calls
+        tool_calls = calls
+        if debug:
+            debug_info.append(f"**Fallback:** {reason} -> {calls}")
+
     route_triggers = {
         "fastest route",
         "quickest route",
@@ -765,10 +771,64 @@ JSON:"""
         "價格",
         "費用",
     }
+    booking_precheck_triggers = {
+        "book",
+        "booking",
+        "reserve",
+        "reservation",
+        "buy a ticket",
+        "ticket",
+        "訂票",
+        "訂一張票",
+        "買票",
+        "預訂",
+    }
+    travel_date_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", augmented_message)
+    is_booking_precheck = (
+        any(kw in lower for kw in booking_precheck_triggers)
+        and not _user_confirmed(history + [{"role": "user", "content": user_message}])
+        and len(station_ids) >= 2
+        and schedule_ids
+        and travel_date_match
+        and schedule_ids[0].upper().startswith("NR_SCH")
+    )
+    if is_booking_precheck:
+        schedule_id = schedule_ids[0].upper()
+        origin_id = station_ids[0].upper()
+        destination_id = station_ids[1].upper()
+        travel_date = travel_date_match.group(0)
+        fare_class = "first" if "first" in lower else "standard"
+        _fallback_many(
+            [
+                {
+                    "name": "check_national_rail_availability",
+                    "params": {
+                        "origin_id": origin_id,
+                        "destination_id": destination_id,
+                        "travel_date": travel_date,
+                    },
+                },
+                {
+                    "name": "get_national_rail_schedule_fares",
+                    "params": {"schedule_id": schedule_id},
+                },
+                {
+                    "name": "get_available_seats",
+                    "params": {
+                        "schedule_id": schedule_id,
+                        "travel_date": travel_date,
+                        "fare_class": fare_class,
+                    },
+                },
+            ],
+            "booking pre-check needs route/date availability, fare, and seats",
+        )
+
     if (
         schedule_ids
         and any(kw in lower for kw in fare_triggers)
         and not _tool_selected("get_national_rail_schedule_fares", "schedule_id")
+        and not is_booking_precheck
     ):
         schedule_id = schedule_ids[0].upper()
         if schedule_id.startswith("NR_SCH"):
