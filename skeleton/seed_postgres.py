@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Author: Your name
+# @Date:   2026-05-28 14:29:40
+# @Last Modified by:   Your name
+# @Last Modified time: 2026-05-29 14:59:24
 """
 Seed PostgreSQL with all TransitFlow mock data from train-mock-data/.
 
