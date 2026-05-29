@@ -2,7 +2,7 @@
 # @Author: Your name
 # @Date:   2026-05-28 14:29:40
 # @Last Modified by:   Your name
-# @Last Modified time: 2026-05-28 20:30:03
+# @Last Modified time: 2026-05-29 15:09:31
 """
 TransitFlow - Intelligent Agent
 
@@ -19,6 +19,7 @@ HOW IT WORKS:
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date
 from typing import Optional
@@ -47,6 +48,40 @@ from databases.relational.queries import (
 from skeleton.llm_provider import llm
 
 
+# Cache embedded confirmation examples so repeated booking confirmations are faster.
+_CONFIRMATION_VECTOR_CACHE: dict[str, list[tuple[str, list[float]]]] = {}
+
+# Example phrases used by the vector fallback to detect confirm/reject intent.
+_CONFIRMATION_EXAMPLES = {
+    "confirm": [
+        "yes, confirm this booking",
+        "ok, book it",
+        "go ahead and make the booking",
+        "submit the booking",
+        "I agree to book this ticket",
+        "確認訂票",
+        "幫我訂這張票",
+        "可以，送出訂票",
+        "好的，就訂這個",
+        "沒問題，請幫我完成訂票",
+    ],
+    "reject": [
+        "no, do not book it",
+        "cancel this booking",
+        "do not submit the booking",
+        "wait, I do not want to book yet",
+        "stop the booking",
+        "不要訂票",
+        "取消訂票",
+        "先不要送出",
+        "等一下，不要訂",
+        "我還不想確認",
+    ],
+}
+
+
+# Maps station names to database IDs so natural-language station names can be
+# converted into reliable query parameters before tool routing.
 _STATION_INDEX: dict[str, str] = {
     # Metro - English
     "central square": "MS01",
@@ -133,6 +168,7 @@ def _inject_station_ids(text: str) -> str:
     return result
 
 
+# Main instruction prompt for the final answer-writing LLM call.
 SYSTEM_PROMPT = """You are TransitFlow, a friendly and patient transit assistant for a dual-network system.
 
 Networks: City Metro MS01-MS20 (lines M1-M4) | National Rail NR01-NR10 (lines NR1-NR2)
@@ -164,6 +200,7 @@ Always reply in the same language as the user.
 """.format(today=date.today().isoformat())
 
 
+# Tool metadata used by the native tool router / JSON router.
 TOOLS = [
     {
         "name": "check_national_rail_availability",
@@ -329,6 +366,7 @@ TOOLS = [
     },
 ]
 
+# Compact tool list injected into the JSON-only router prompt.
 TOOLS_SCHEMA = """\
 find_route(origin_id, destination_id, optimise_by?)
 check_national_rail_availability(origin_id, destination_id, travel_date?)
@@ -336,7 +374,6 @@ get_national_rail_fare(schedule_id, fare_class, stops_travelled)
 get_national_rail_schedule_fares(schedule_id)
 check_metro_availability(origin_id, destination_id)
 calculate_metro_fare(schedule_id, stops_travelled)
-get_metro_fare(origin_id, destination_id)
 get_available_seats(schedule_id, travel_date, fare_class)
 make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, fare_class, seat_id, ticket_type?)
 cancel_booking(booking_id)
@@ -348,17 +385,6 @@ find_alternative_routes(origin_id, destination_id, avoid_station_id, network?)
 get_delay_ripple(station_id, hops?)"""
 
 
-TOOL_REQUIREMENTS = {tool["name"]: set(tool.get("required", [])) for tool in TOOLS}
-
-
-def _missing_required_params(tool_name: str, params: dict) -> list[str]:
-    required_params = TOOL_REQUIREMENTS.get(tool_name, set())
-    return [
-        key for key in sorted(required_params)
-        if params.get(key) in (None, "")
-    ]
-
-
 def _execute_tool(
     tool_name: str,
     params: dict,
@@ -367,9 +393,11 @@ def _execute_tool(
     """Execute a tool call and return the result as a JSON string."""
     try:
         if tool_name == "check_national_rail_availability":
+            # Read PostgreSQL rail schedules and seat availability for a route/date.
             result = query_national_rail_availability(**params)
 
         elif tool_name == "get_national_rail_fare":
+            # If stops are missing/invalid, fall back to showing all fares for the schedule.
             stops_travelled = params.get("stops_travelled")
             try:
                 params["stops_travelled"] = int(stops_travelled)
@@ -384,20 +412,24 @@ def _execute_tool(
                 result = query_national_rail_fare(**params)
 
         elif tool_name == "get_national_rail_schedule_fares":
+            # Return every fare class / ticket price configured for a rail schedule.
             result = query_national_rail_schedule_fares(params["schedule_id"])
             if not result:
                 return json.dumps({"error": f"找不到班次 {params['schedule_id']} 的票價資料。"})
 
         elif tool_name == "check_metro_availability":
+            # Read PostgreSQL metro schedule records for the requested stations.
             result = query_metro_schedules(
                 origin_id=params["origin_id"],
                 destination_id=params["destination_id"],
             )
 
         elif tool_name == "calculate_metro_fare":
+            # Calculate fare from a known metro schedule and stop count.
             result = query_metro_fare(**params)
 
         elif tool_name == "get_metro_fare":
+            # Prefer a direct PostgreSQL schedule, then estimate from Neo4j route legs.
             schedules = query_metro_schedules(
                 origin_id=params["origin_id"],
                 destination_id=params["destination_id"],
@@ -441,11 +473,15 @@ def _execute_tool(
                 }
 
         elif tool_name == "get_user_bookings":
+            # Personal booking history is scoped to the logged-in email.
             if not current_user_email:
                 return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試。"})
             result = query_user_bookings(current_user_email)
+            print("current_user_email =", current_user_email)
+            print("result =", result) 
 
         elif tool_name == "get_user_profile":
+            # Profile lookup verifies the current session user before returning account data.
             if not current_user_email:
                 return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試。"})
             result = query_user_profile(current_user_email)
@@ -455,14 +491,17 @@ def _execute_tool(
         elif tool_name == "get_payment_info":
             if not current_user_email:
                 return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試。"})
+            # Pass the logged-in email so payment lookup stays scoped to the current user.
             result = query_payment_info(params["booking_id"], current_user_email)
             if result is None:
                 return json.dumps({"error": f"找不到訂單 {params['booking_id']} 的付款紀錄。"})
 
         elif tool_name == "get_available_seats":
+            # Seat lookup is used before booking so the user can pick an available seat.
             result = query_available_seats(**params)
 
         elif tool_name == "make_booking":
+            # Booking writes require login; email is converted to user_id before inserting.
             if not current_user_email:
                 return json.dumps({"error": "您需要先登入才能訂票。"})
             profile = query_user_profile(current_user_email)
@@ -481,6 +520,7 @@ def _execute_tool(
             result = data if ok else {"error": f"訂票失敗：{data}"}
 
         elif tool_name == "cancel_booking":
+            # Cancellation also checks the logged-in user's user_id for ownership safety.
             if not current_user_email:
                 return json.dumps({"error": "您需要先登入才能取消訂票。"})
             profile = query_user_profile(current_user_email)
@@ -493,6 +533,7 @@ def _execute_tool(
             result = data if ok else {"error": f"取消失敗：{data}"}
 
         elif tool_name == "search_policy":
+            # Policy search embeds the question and performs vector similarity search.
             embedding = llm.embed(params["query"])
             docs = query_policy_vector_search(embedding)
             if not docs:
@@ -508,6 +549,7 @@ def _execute_tool(
             ]
 
         elif tool_name == "find_route":
+            # Route search uses Neo4j and picks interchange, cheapest, or shortest logic.
             origin_id = params["origin_id"]
             destination_id = params["destination_id"]
             network = params.get("network", "auto")
@@ -536,6 +578,7 @@ def _execute_tool(
                 )
 
         elif tool_name == "find_alternative_routes":
+            # Alternative routes ask Neo4j for paths that avoid a disrupted station.
             routes = query_alternative_routes(
                 origin_id=params["origin_id"],
                 destination_id=params["destination_id"],
@@ -545,6 +588,7 @@ def _execute_tool(
             result = [{"route_number": i + 1, "legs": r} for i, r in enumerate(routes)]
 
         elif tool_name == "get_delay_ripple":
+            # Delay ripple expands outward from one station to show nearby affected nodes.
             result = query_delay_ripple(
                 delayed_station_id=params["station_id"],
                 hops=params.get("hops", 2),
@@ -591,6 +635,7 @@ def _flatten_to_text(obj, depth: int = 0) -> str:
 
 
 def _normalise_result(tool_name: str, result_json: str) -> str:
+    """Turn tool JSON into readable debug text for the UI debug panel."""
     try:
         data = json.loads(result_json)
     except json.JSONDecodeError:
@@ -601,10 +646,12 @@ def _normalise_result(tool_name: str, result_json: str) -> str:
 
 
 def _summarise_result(tool_name: str, result_json: str) -> str:
+    """Keep the full JSON payload available for the final LLM answer step."""
     return result_json
 
 
 def _parse_tool_calls(llm_response: str) -> list[dict] | None:
+    """Extract the router's JSON tool_calls object from plain or fenced text."""
     text = llm_response.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
@@ -623,6 +670,57 @@ def _parse_tool_calls(llm_response: str) -> list[dict] | None:
     return None
 
 
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    """Return cosine similarity for two embedding vectors."""
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    if not left_norm or not right_norm:
+        return 0.0
+    return dot / (left_norm * right_norm)
+
+
+def _confirmation_example_vectors(label: str) -> list[tuple[str, list[float]]]:
+    """Embed and cache confirmation examples for semantic fallback matching."""
+    if label not in _CONFIRMATION_VECTOR_CACHE:
+        _CONFIRMATION_VECTOR_CACHE[label] = [
+            (example, llm.embed(example))
+            for example in _CONFIRMATION_EXAMPLES[label]
+        ]
+    return _CONFIRMATION_VECTOR_CACHE[label]
+
+
+def _vector_confirmation_state(message: str) -> str:
+    """
+    Classify confirmation intent semantically.
+
+    Returns confirm, reject, or unclear. This is only a fallback after explicit
+    keyword checks, so it uses conservative thresholds.
+    """
+    try:
+        message_vector = llm.embed(message)
+        scores: dict[str, float] = {}
+        for label in ("confirm", "reject"):
+            example_scores = [
+                _cosine_similarity(message_vector, example_vector)
+                for _, example_vector in _confirmation_example_vectors(label)
+            ]
+            scores[label] = max(example_scores, default=0.0)
+    except Exception:
+        return "unclear"
+
+    confirm_score = scores.get("confirm", 0.0)
+    reject_score = scores.get("reject", 0.0)
+    margin = abs(confirm_score - reject_score)
+    if confirm_score >= 0.78 and confirm_score > reject_score and margin >= 0.04:
+        return "confirm"
+    if reject_score >= 0.78 and reject_score > confirm_score and margin >= 0.04:
+        return "reject"
+    return "unclear"
+
+
 def _user_confirmed(history: list[dict]) -> bool:
     """Check if the most recent user message contains an explicit confirmation."""
     if not history:
@@ -631,11 +729,40 @@ def _user_confirmed(history: list[dict]) -> bool:
         (m["content"].lower() for m in reversed(history) if m["role"] == "user"),
         "",
     )
-    confirm_words = {"confirm", "yes", "確認", "好", "ok", "好的", "沒問題", "訂吧", "訂了"}
-    if re.search(r"\b(confirm|yes|ok)\b", last_user):
+    reject_words = {
+        "no",
+        "cancel",
+        "不要",
+        "先不要",
+        "不確認",
+        "取消",
+        "等等",
+        "等一下",
+    }
+    if any(word in last_user for word in reject_words):
+        return False
+
+    if re.search(r"\b(confirm|yes|ok|sure|go ahead)\b", last_user):
         return True
-    confirm_words -= {"confirm", "yes", "ok"}
-    return any(word in last_user for word in confirm_words)
+
+    confirm_words = {
+        "確認",
+        "好",
+        "好的",
+        "可以",
+        "沒問題",
+        "沒錯",
+        "對",
+        "是的",
+        "幫我訂",
+        "訂吧",
+        "訂了",
+        "送出",
+    }
+    if any(word in last_user for word in confirm_words):
+        return True
+
+    return _vector_confirmation_state(last_user) == "confirm"
 
 
 def run_agent(
@@ -647,6 +774,7 @@ def run_agent(
     """Main agent loop."""
     debug_info = []
 
+    # Add login context to the system prompt so personal tools know who is asking.
     if current_user_email:
         profile = query_user_profile(current_user_email)
         if profile:
@@ -666,9 +794,11 @@ def run_agent(
             "請友善地告知他們需要先登入。"
         )
 
+    # Keep only recent chat history for routing, then annotate station names with IDs.
     recent_history = history[-4:] if len(history) > 4 else history
     augmented_message = _inject_station_ids(user_message)
 
+    # Ask the LLM router to choose database tools and parameters in strict JSON.
     tool_selection_prompt = f"""Output only this JSON (no other text):
 {{"tool_calls": [{{"name": "TOOL", "params": {{"KEY": "VALUE"}}}}]}}
 Or if no tool needed: {{"tool_calls": []}}
@@ -694,6 +824,7 @@ USER: "{augmented_message}"
 JSON:"""
 
     if llm.get_chat_provider() == "ollama":
+        # Ollama supports the native tool-call path used by this project.
         try:
             tool_calls = llm.ollama_tool_call(
                 recent_history,
@@ -722,6 +853,7 @@ JSON:"""
         if debug:
             debug_info.append(f"**Tool selection (native):** {tool_calls}")
     else:
+        # Non-Ollama providers use a JSON-only prompt and a lightweight parser.
         selection_response = llm.chat(
             messages=[{"role": "user", "content": tool_selection_prompt}],
             system_prompt="JSON only. You are a router. Output valid JSON. No empty string param values.",
@@ -730,12 +862,14 @@ JSON:"""
         if debug:
             debug_info.append(f"**Tool selection:** {selection_response}")
 
+    # Pre-compute common IDs and keywords for deterministic fallback routing.
     lower = augmented_message.lower()
     station_ids = re.findall(r"\b(MS\d{2}|NR\d{2})\b", augmented_message, re.IGNORECASE)
     schedule_ids = re.findall(r"\b(NR_SCH\d{2}|MS_SCH\d{2})\b", augmented_message, re.IGNORECASE)
     two_stations = len(station_ids) >= 2
 
     def _tool_selected(name: str, *required_params) -> bool:
+        """Check whether the router already selected a complete tool call."""
         call = next((c for c in tool_calls if c.get("name") == name), None)
         if not call:
             return False
@@ -743,12 +877,14 @@ JSON:"""
         return all(params.get(k) for k in required_params)
 
     def _fallback(name: str, params: dict, reason: str) -> None:
+        """Replace router output with one deterministic fallback tool call."""
         nonlocal tool_calls
         tool_calls = [{"name": name, "params": params}]
         if debug:
             debug_info.append(f"**Fallback:** {reason} -> {name}({params})")
 
     def _fallback_many(calls: list[dict], reason: str) -> None:
+        """Replace router output with multiple deterministic fallback calls."""
         nonlocal tool_calls
         tool_calls = calls
         if debug:
@@ -804,6 +940,7 @@ JSON:"""
         "預訂",
     }
     travel_date_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", augmented_message)
+    # For unconfirmed rail booking requests, gather availability, prices, and seats first.
     is_booking_precheck = (
         any(kw in lower for kw in booking_precheck_triggers)
         and not _user_confirmed(history + [{"role": "user", "content": user_message}])
@@ -813,6 +950,7 @@ JSON:"""
         and schedule_ids[0].upper().startswith("NR_SCH")
     )
     if is_booking_precheck:
+        # Build a multi-tool pre-check so the user can confirm with complete details.
         schedule_id = schedule_ids[0].upper()
         origin_id = station_ids[0].upper()
         destination_id = station_ids[1].upper()
@@ -850,6 +988,7 @@ JSON:"""
         and not _tool_selected("get_national_rail_schedule_fares", "schedule_id")
         and not is_booking_precheck
     ):
+        # If the router missed a rail fare question, recover from the schedule ID.
         schedule_id = schedule_ids[0].upper()
         if schedule_id.startswith("NR_SCH"):
             _fallback(
@@ -864,6 +1003,7 @@ JSON:"""
         or (two_stations and "路線" in lower)
     )
     if is_route and two_stations and not _tool_selected("find_route", "origin_id", "destination_id"):
+        # Route fallback catches common "how do I get from A to B" phrasing.
         optimise_by = "cost" if any(
             kw in lower for kw in ["cheap", "cheapest", "lowest cost", "最便宜", "最低票價"]
         ) else "time"
@@ -878,6 +1018,7 @@ JSON:"""
         )
 
     elif not tool_calls and two_stations:
+        # Availability fallback catches schedule/timetable questions with two station IDs.
         availability_triggers = {
             "train",
             "trains",
@@ -910,6 +1051,7 @@ JSON:"""
             _fallback(tool, params, "availability query")
 
     if current_user_email and not tool_calls:
+        # Logged-in personal-history questions should read bookings without extra params.
         personal_triggers = {
             "my booking",
             "my ticket",
@@ -935,6 +1077,7 @@ JSON:"""
             _fallback("get_user_bookings", {}, "personal booking query")
 
     if current_user_email and not tool_calls:
+        # Logged-in profile/account questions read the user's registered profile.
         profile_triggers = {
             "my account",
             "my profile",
@@ -949,6 +1092,7 @@ JSON:"""
             _fallback("get_user_profile", {}, "profile query")
 
     if not tool_calls:
+        # Policy questions are answered from vector-searched policy documents.
         policy_triggers = {
             "refund",
             "policy",
@@ -968,6 +1112,7 @@ JSON:"""
             _fallback("search_policy", {"query": user_message}, "policy query")
 
     if any(c.get("name") == "make_booking" for c in tool_calls):
+        # Never allow booking writes unless the latest user message confirms it.
         if not _user_confirmed(history + [{"role": "user", "content": user_message}]):
             tool_calls = []
             if debug:
@@ -975,17 +1120,11 @@ JSON:"""
 
     tool_results = []
     for call in tool_calls:
+        # Execute each selected tool and keep both raw JSON and LLM-facing summary.
         tool_name = call.get("name", "")
         params = call.get("params") or call.get("parameters", {})
-        missing_params = _missing_required_params(tool_name, params)
 
-        if missing_params:
-            if debug:
-                debug_info.append(
-                    f"**Skipped** `{tool_name}` - missing required params: {missing_params}"
-                )
-            continue
-
+        # Empty-string parameters usually mean the router guessed, so skip them safely.
         if any(v == "" for v in params.values()):
             if debug:
                 debug_info.append(f"**Skipped** `{tool_name}` - empty params: {params}")
@@ -1035,6 +1174,7 @@ JSON:"""
     }
     data_block = ""
     if tool_results:
+        # Feed database results back to the LLM as the only source of truth.
         data_block = "\n\n".join(
             f"[{tr['tool']}]\n{_normalise_result(tr['tool'], tr['result'])}"
             for tr in tool_results
@@ -1047,6 +1187,7 @@ JSON:"""
             f"\n\nAnswer using only the data above. Use emojis and clear formatting:"
         )
     elif any(kw in user_message.lower() for kw in db_keywords):
+        # For database-like questions with no data, make the model avoid hallucination.
         content = (
             f"User asks: {user_message}\n\n"
             "IMPORTANT: No data was retrieved from the TransitFlow database for this query. "
@@ -1054,12 +1195,15 @@ JSON:"""
             "Do NOT invent any bookings, fares, schedules, seat numbers, or travel times."
         )
     else:
+        # Non-database chat can go directly to the LLM without tool data.
         content = user_message
 
     final_messages = history + [{"role": "user", "content": content}]
     try:
+        # Final generation turns tool data into a friendly user-facing answer.
         answer = llm.chat(messages=final_messages, system_prompt=contextual_prompt)
     except ConnectionError as exc:
+        # If the LLM is down but tools worked, still show the retrieved data.
         if tool_results:
             answer = f"目前 Ollama 沒有啟動；先直接提供資料庫查詢結果：\n\n{data_block}"
         else:
@@ -1070,6 +1214,7 @@ JSON:"""
         if debug:
             debug_info.append(f"**LLM unavailable:** {exc}")
 
+    # Persist the new user/assistant turn for the UI chat state.
     updated_history = history + [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": answer},
