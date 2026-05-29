@@ -915,14 +915,14 @@ JSON:"""
             _fallback("get_user_profile", {}, "profile query")
 
     # 5. Policy questions
-    if not tool_calls:
-        _policy_triggers = {
-            "refund", "policy", "compensation", "luggage", "bicycle", "pet",
-            "退款", "補償", "政策", "行李", "寵物", "腳踏車", "規定",
-        }
-        if any(kw in _lower for kw in _policy_triggers):
-            _fallback("search_policy", {"query": user_message}, "policy query")
-
+   # 5. Policy questions — override wrong tool if policy keywords detected
+    _policy_triggers = {
+        "refund", "policy", "compensation", "luggage", "bicycle", "pet",
+        "退款", "補償", "政策", "行李", "寵物", "腳踏車", "規定",
+    }
+    if any(kw in _lower for kw in _policy_triggers):
+        if not _tool_selected("search_policy", "query"):
+            _fallback("search_policy", {"query": user_message}, "policy query (override wrong tool)")
     # ── Booking confirmation gate ──────────────────────────────────────────────
     # If the LLM wants to call make_booking but the user hasn't confirmed yet,
     # block it and let the LLM ask for confirmation instead.
