@@ -1,7 +1,9 @@
 # TASK 6 EXTENSION: added get_user_profile and get_payment_info tools,
 # Chinese keyword support, booking confirmation gate, human-friendly prompts,
 # stronger fallback logic, greeting protection, Chinese policy query translation,
-# pre-classification for tool routing, automatic date extraction, multi-step chaining
+# pre-classification for tool routing, automatic date extraction, multi-step chaining,
+# booking confirmation context recovery, cancel vs policy classification fix,
+# pre-login check, ticket type extraction, seat preference detection
 """
 TransitFlow — Intelligent Agent
 ================================
@@ -9,9 +11,8 @@ This is the brain of the system.
 
 HOW IT WORKS (the pipeline students should understand):
   1. User asks a natural language question
-  2. The LLM reads the question and decides which databases to query
-     (this is called "tool use" or "function calling")
-  3. Each database query runs and returns structured data
+  2. Pre-classification determines the query category using keywords
+  3. The correct database tools are called automatically
   4. The LLM reads all the data and writes a helpful answer
   5. The answer is returned to the Gradio UI
 
@@ -21,18 +22,23 @@ THE THREE DATABASE ROLES IN THIS FILE:
   - Graph (Neo4j)            → route finding, delay ripple, cross-network paths
 
 OPTIMIZATIONS (v4):
-  1. Chinese keyword & station name support
-  2. Added get_user_profile and get_payment_info tools
-  3. More human-friendly system prompt and error messages
-  4. Booking confirmation mechanism (agent-side)
-  5. Quick-select station buttons (UI-side)
-  6. Structured, emoji-enhanced response formatting
-  7. Stronger fallback: overrides wrong tool selections
-  8. Greeting protection: simple greetings skip all tool calls
-  9. Chinese policy query translation for vector search
-  10. Pre-classification: categorize query BEFORE LLM to reduce tool choices
-  11. Automatic date extraction from natural language
-  12. Multi-step chaining: booking queries auto-call availability + fare + seats
+  1.  Chinese keyword & station name support (30 mappings)
+  2.  Added get_user_profile and get_payment_info tools
+  3.  Human-friendly system prompt and error messages
+  4.  Booking confirmation mechanism with context recovery
+  5.  Structured, emoji-enhanced response formatting
+  6.  Stronger fallback: overrides wrong tool selections
+  7.  Greeting protection: skip tool calls for simple greetings
+  8.  Chinese policy query translation for vector search
+  9.  Pre-classification: categorize query BEFORE LLM (14→2-4 tools)
+  10. Automatic date extraction from natural language
+  11. Multi-step chaining: booking queries auto-call availability+fare+seats
+  12. Cancel vs policy smart classification
+  13. Pre-login check: prompt login BEFORE running booking chain
+  14. Ticket type extraction (single/return from 單程/來回)
+  15. Seat preference extraction (window/aisle from 靠窗/走道)
+  16. Multi-schedule selection: list options for user to choose
+  17. Stronger confirmation message format in SYSTEM_PROMPT
 """
 
 from __future__ import annotations
@@ -133,9 +139,7 @@ def _translate_policy_query(query: str) -> str:
     for zh, en in _POLICY_TRANSLATION.items():
         if zh in query:
             translations.append(en)
-    if translations:
-        return " ".join(translations)
-    return query
+    return " ".join(translations) if translations else query
 
 
 def _inject_station_ids(text: str) -> str:
@@ -174,59 +178,83 @@ def _is_greeting(text: str) -> bool:
     return False
 
 
-# ── Automatic date extraction ─────────────────────────────────────────────────
-# OPTIMIZATION v4: Extract dates from natural language so the LLM doesn't
-# have to (it often misses them).
+# ── Date extraction ───────────────────────────────────────────────────────────
 
 def _extract_date(text: str) -> Optional[str]:
-    """
-    Extract a date in YYYY-MM-DD format from text.
-    Returns None if no date is found.
-    """
-    # Match explicit YYYY-MM-DD format
+    """Extract a date in YYYY-MM-DD format from text."""
     match = re.search(r'(\d{4}-\d{2}-\d{2})', text)
     if match:
         return match.group(1)
-    # Match YYYY/MM/DD format
     match = re.search(r'(\d{4})/(\d{2})/(\d{2})', text)
     if match:
         return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
     return None
 
 
-# ── Extract station IDs from text ─────────────────────────────────────────────
+# ── Station ID extraction ────────────────────────────────────────────────────
 
 def _extract_station_ids(text: str) -> list[str]:
     """Extract all station IDs (MS01, NR05, etc.) from text."""
     return [sid.upper() for sid in re.findall(r'(MS\d{2}|NR\d{2})', text, re.IGNORECASE)]
 
 
+# ── Ticket type extraction ───────────────────────────────────────────────────
+# OPTIMIZATION v4.14: Detect whether the user wants a single or return ticket.
+
+def _extract_ticket_type(text: str) -> str:
+    """Extract ticket type from text. Defaults to 'single'."""
+    lower = text.lower()
+    return_kw = {"return", "round trip", "round-trip", "來回", "來回票", "往返"}
+    if any(kw in lower for kw in return_kw):
+        return "return"
+    return "single"
+
+
+# ── Seat preference extraction ────────────────────────────────────────────────
+# OPTIMIZATION v4.15: Detect whether user wants a window or aisle seat.
+
+def _extract_seat_preference(text: str) -> Optional[str]:
+    """Extract seat preference from text."""
+    lower = text.lower()
+    if any(kw in lower for kw in ["window", "靠窗", "窗邊", "窗戶"]):
+        return "window"
+    if any(kw in lower for kw in ["aisle", "走道", "靠走道"]):
+        return "aisle"
+    return None
+
+
+# ── Fare class extraction ────────────────────────────────────────────────────
+
+def _extract_fare_class(text: str) -> str:
+    """Extract fare class from text. Defaults to 'standard'."""
+    lower = text.lower()
+    if any(kw in lower for kw in ["first class", "first", "頭等", "商務", "一等"]):
+        return "first"
+    return "standard"
+
+
 # ── Pre-classification ────────────────────────────────────────────────────────
-# OPTIMIZATION v4: Categorize the query BEFORE sending to the LLM.
-# This determines which tools the LLM sees, reducing its choices from 14
-# down to 2-4, dramatically improving accuracy on small models.
+# OPTIMIZATION v4.9 + v4.12: Categorize queries with smarter cancel vs policy.
 
 def _pre_classify_query(text: str, station_ids: list[str], has_date: bool,
                         current_user_email: Optional[str]) -> str:
     """
-    Classify a user query into one of these categories:
-    - greeting: simple hello, no tool needed
-    - route: directions, fastest/cheapest path between stations
-    - availability: train/metro schedules, what runs between stations
-    - booking: wants to buy a ticket, book a seat, or asks about seats
-    - fare: specifically asking about price/cost
-    - policy: refund, compensation, luggage, conduct rules
-    - personal: my bookings, my account, my profile
-    - delay: station disruption, delay ripple
-    - cancel: wants to cancel a booking
-    - general: anything else
+    Classify a user query into a category:
+    greeting, route, availability, booking, fare, policy, personal,
+    cancel, delay, confirm, general
     """
     lower = text.lower()
     two_stations = len(station_ids) >= 2
     is_cross_network = (
         two_stations and
-        station_ids[0][:2] != station_ids[1][:2]  # MS vs NR
+        station_ids[0][:2] != station_ids[1][:2]
     )
+
+    # ── Confirmation detection (OPTIMIZATION v4.4) ────────────────────
+    confirm_words = {"confirm", "yes", "確認", "好", "ok", "好的", "沒問題", "訂吧", "訂了"}
+    clean = lower.strip().rstrip("!！。.~")
+    if clean in confirm_words or (len(clean) < 15 and any(w in clean for w in confirm_words)):
+        return "confirm"
 
     # ── Route keywords ────────────────────────────────────────────────
     route_kw = {
@@ -253,8 +281,7 @@ def _pre_classify_query(text: str, station_ids: list[str], has_date: bool,
 
     # ── Fare / price keywords ─────────────────────────────────────────
     fare_kw = {
-        "fare", "price", "cost", "how much", "票價", "多少錢", "價格",
-        "費用",
+        "fare", "price", "cost", "how much", "票價", "多少錢", "價格", "費用",
     }
 
     # ── Policy keywords ───────────────────────────────────────────────
@@ -273,14 +300,18 @@ def _pre_classify_query(text: str, station_ids: list[str], has_date: bool,
     }
 
     # ── Cancel keywords ───────────────────────────────────────────────
-    cancel_kw = {
-        "cancel", "cancellation", "取消", "退訂",
-    }
+    cancel_kw = {"cancel", "cancellation", "取消", "退訂"}
 
     # ── Delay keywords ────────────────────────────────────────────────
-    delay_kw = {
-        "delay", "disruption", "closed", "affected", "ripple",
-        "延誤", "關閉", "影響",
+    delay_kw = {"delay", "disruption", "closed", "affected", "ripple",
+                "延誤", "關閉", "影響"}
+
+    # ── OPTIMIZATION v4.12: Cancel vs Policy smart classification ─────
+    # If the user mentions "cancel" but also asks "how much refund",
+    # "what's the policy", etc., it's a POLICY question, not a cancel action.
+    _policy_override_kw = {
+        "多少", "政策", "如何", "怎麼", "可以退", "退多少", "規定",
+        "how much", "what is", "what's", "policy", "refund amount",
     }
 
     # Priority-based classification (order matters!)
@@ -289,19 +320,26 @@ def _pre_classify_query(text: str, station_ids: list[str], has_date: bool,
     if is_cross_network and two_stations:
         return "route"
 
-    # 2. Route keywords
+    # 2. Route keywords with stations
     if any(kw in lower for kw in route_kw) and two_stations:
         return "route"
 
-    # 3. Cancel
+    # 3. Cancel vs Policy (SMART)
     if any(kw in lower for kw in cancel_kw):
+        # If also has policy-like words → it's a policy question
+        if any(kw in lower for kw in _policy_override_kw):
+            return "policy"
+        # If also has policy keywords → it's a policy question
+        if any(kw in lower for kw in policy_kw):
+            return "policy"
+        # Pure cancel intent
         return "cancel"
 
     # 4. Booking / seat / ticket (with stations)
     if any(kw in lower for kw in booking_kw) and two_stations:
         return "booking"
 
-    # 5. Fare only (no booking intent)
+    # 5. Fare only
     if any(kw in lower for kw in fare_kw) and two_stations:
         return "fare"
 
@@ -309,7 +347,7 @@ def _pre_classify_query(text: str, station_ids: list[str], has_date: bool,
     if any(kw in lower for kw in avail_kw) and two_stations:
         return "availability"
 
-    # 7. Two stations but no specific keyword → default to availability
+    # 7. Two stations but no specific keyword → default availability
     if two_stations:
         return "availability"
 
@@ -325,13 +363,10 @@ def _pre_classify_query(text: str, station_ids: list[str], has_date: bool,
     if any(kw in lower for kw in delay_kw):
         return "delay"
 
-    # 11. General
     return "general"
 
 
-# ── Tool filtering based on category ──────────────────────────────────────────
-# OPTIMIZATION v4: Only show the LLM tools relevant to the query category.
-# "14 choose 1" becomes "2-4 choose 1" — much more accurate.
+# ── Tool filtering ────────────────────────────────────────────────────────────
 
 _CATEGORY_TOOLS: dict[str, list[str]] = {
     "route": ["find_route", "find_alternative_routes"],
@@ -344,16 +379,72 @@ _CATEGORY_TOOLS: dict[str, list[str]] = {
     "personal": ["get_user_bookings", "get_user_profile", "get_payment_info"],
     "cancel": ["cancel_booking", "get_user_bookings"],
     "delay": ["get_delay_ripple"],
-    "general": [],  # No tools — just chat
+    "general": [],
 }
 
 
 def _filter_tools(tools: list[dict], category: str) -> list[dict]:
-    """Return only the tools relevant to the given category."""
     allowed = _CATEGORY_TOOLS.get(category)
     if allowed is None:
-        return tools  # Unknown category → show all
+        return tools
     return [t for t in tools if t["name"] in allowed]
+
+
+# ── Booking confirmation context recovery ─────────────────────────────────────
+# OPTIMIZATION v4.4: When user says "確認", parse conversation history to
+# recover booking details (origin, destination, date, fare_class, etc.)
+# that were discussed in previous messages.
+
+def _recover_booking_context(history: list[dict]) -> Optional[dict]:
+    """
+    Scan conversation history to recover booking details.
+    Looks for station IDs, dates, fare class, schedule IDs in both
+    user messages and assistant messages (which contain tool results).
+    Returns a dict with recovered params, or None if insufficient.
+    """
+    all_text = ""
+    for msg in reversed(history[-8:]):  # Look at last 8 messages
+        all_text += " " + msg.get("content", "")
+
+    # Extract station IDs
+    station_ids = _extract_station_ids(all_text)
+    if len(station_ids) < 2:
+        return None
+
+    # Extract schedule ID (e.g. NR_SCH01)
+    schedule_match = re.search(r'(NR_SCH\d+|MS_SCH\d+)', all_text)
+    schedule_id = schedule_match.group(1) if schedule_match else None
+
+    # Extract date
+    travel_date = _extract_date(all_text)
+
+    # Extract fare class
+    fare_class = _extract_fare_class(all_text)
+
+    # Extract ticket type
+    ticket_type = _extract_ticket_type(all_text)
+
+    # We need at least origin, destination, and schedule_id
+    if not schedule_id:
+        return None
+
+    # Determine origin and destination from the station IDs
+    # Use the first two unique IDs found
+    origin_id = station_ids[0]
+    destination_id = station_ids[1] if len(station_ids) > 1 else None
+
+    if not destination_id:
+        return None
+
+    return {
+        "schedule_id": schedule_id,
+        "origin_station_id": origin_id,
+        "destination_station_id": destination_id,
+        "travel_date": travel_date or date.today().isoformat(),
+        "fare_class": fare_class,
+        "seat_id": "any",
+        "ticket_type": ticket_type,
+    }
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
@@ -381,9 +472,25 @@ ERROR HANDLING:
 - If no route found: "很抱歉，找不到這兩站之間的路線。建議您查看是否需要換乘。"
 - If not logged in for booking: "您需要先登入才能訂票，請點右上角的登入按鈕 😊"
 
-BOOKING CONFIRMATION RULE:
-- Before calling make_booking, ALWAYS summarise the booking details and ask the user to confirm.
-- Only call make_booking after the user explicitly says "confirm", "yes", "確認", "好", or "ok".
+BOOKING CONFIRMATION RULE (CRITICAL):
+- When showing booking details to the user, ALWAYS format like this:
+  📋 訂票摘要：
+  🚂 路線：[origin_name] ([origin_id]) → [dest_name] ([dest_id])
+  📅 日期：[travel_date]
+  🎫 票種：[ticket_type] (single/return)
+  💺 座位等級：[fare_class] (standard/first)
+  💰 票價：$[fare]
+  🪑 座位：[seat_id]
+
+  請回覆「確認」以完成訂票，或告訴我需要修改的地方。
+- NEVER call make_booking unless the user has explicitly said "confirm", "yes", "確認", "好", or "ok".
+- Include the schedule_id, origin_id, destination_id in your confirmation message so the system can recover them.
+
+MULTI-SCHEDULE RULE:
+- When multiple schedules are found, list ALL of them with numbers:
+  1️⃣ NR_SCH01 - NR1 線 北行 (06:00-22:30, 每30分鐘)
+  2️⃣ NR_SCH04 - NR2 線 西行 (07:00-22:45, 每45分鐘)
+  請告訴我您要搭哪一班？
 
 LOGIN RULE: Routes, fares, schedules, and policies work WITHOUT login. Only make_booking and cancel_booking need login.
 
@@ -398,10 +505,7 @@ Always reply in the same language as the user.
 TOOLS = [
     {
         "name": "check_national_rail_availability",
-        "description": (
-            "Check available national rail trains between two NR stations. "
-            "Use for schedules, timetables, availability, or as first step before booking."
-        ),
+        "description": "Check available national rail trains between two NR stations.",
         "parameters": {
             "origin_id":      {"type": "string", "description": "NR station ID e.g. NR01"},
             "destination_id": {"type": "string", "description": "NR station ID e.g. NR05"},
@@ -559,12 +663,9 @@ get_delay_ripple(station_id, hops?)"""
 
 # ── Tool execution ────────────────────────────────────────────────────────────
 
-def _execute_tool(
-    tool_name: str,
-    params: dict,
-    current_user_email: Optional[str] = None,
-) -> str:
-    """Execute a tool call and return the result as JSON string."""
+def _execute_tool(tool_name: str, params: dict,
+                  current_user_email: Optional[str] = None) -> str:
+    """Execute a tool call and return JSON string."""
     try:
         if tool_name == "check_national_rail_availability":
             result = query_national_rail_availability(**params)
@@ -670,12 +771,8 @@ def _execute_tool(
             if not docs:
                 return json.dumps({"error": "很抱歉，找不到相關政策資訊。請嘗試用不同的關鍵字搜尋。"})
             result = [
-                {
-                    "title": d["title"],
-                    "category": d["category"],
-                    "content": d["content"][:800],
-                    "similarity": round(d["similarity"], 3),
-                }
+                {"title": d["title"], "category": d["category"],
+                 "content": d["content"][:800], "similarity": round(d["similarity"], 3)}
                 for d in docs
             ]
 
@@ -684,12 +781,10 @@ def _execute_tool(
             destination_id = params["destination_id"]
             network = params.get("network", "auto")
             optimise_by = params.get("optimise_by", "time")
-
             is_cross = (
                 (origin_id.upper().startswith("MS") and destination_id.upper().startswith("NR")) or
                 (origin_id.upper().startswith("NR") and destination_id.upper().startswith("MS"))
             )
-
             if is_cross:
                 result = query_interchange_path(origin_id, destination_id)
             elif optimise_by == "cost":
@@ -786,35 +881,16 @@ def _parse_tool_calls(llm_response: str) -> list[dict] | None:
     return None
 
 
-def _user_confirmed(history: list[dict]) -> bool:
-    if not history:
-        return False
-    last_user = next(
-        (m["content"].lower() for m in reversed(history) if m["role"] == "user"),
-        ""
-    )
-    confirm_words = {"confirm", "yes", "確認", "好", "ok", "好的", "沒問題", "訂吧", "訂了"}
-    return any(word in last_user for word in confirm_words)
-
-
 # ── Multi-step booking chain ──────────────────────────────────────────────────
-# OPTIMIZATION v4: When a user asks about booking, automatically chain
-# availability → fare → seats in one turn, instead of relying on the LLM
-# to call multiple tools (which llama3.2:1b cannot do).
 
 def _chain_booking_query(
-    origin_id: str,
-    destination_id: str,
-    travel_date: Optional[str],
-    fare_class: str,
+    origin_id: str, destination_id: str,
+    travel_date: Optional[str], fare_class: str,
+    seat_preference: Optional[str],
     current_user_email: Optional[str],
-    debug_info: list,
-    debug: bool,
+    debug_info: list, debug: bool,
 ) -> list[dict]:
-    """
-    Automatically chain: availability → fare → seats for a booking query.
-    Returns a list of tool_results ready for the answer LLM.
-    """
+    """Auto-chain: availability → fare → seats for booking queries."""
     results = []
 
     # Step 1: Check availability
@@ -827,41 +903,51 @@ def _chain_booking_query(
     results.append({"tool": "check_national_rail_availability", "params": avail_params,
                      "result": avail_json, "summary": avail_json})
 
-    # Parse availability to get schedule_id and stops_travelled
+    # Parse to get schedule_id and stops
     try:
         avail_data = json.loads(avail_json)
         if isinstance(avail_data, list) and len(avail_data) > 0:
-            sched = avail_data[0]
-            schedule_id = sched.get("schedule_id")
-            stops = sched.get("stops_travelled")
+            # OPTIMIZATION v4.16: Process ALL schedules, not just first
+            for sched in avail_data:
+                schedule_id = sched.get("schedule_id")
+                stops = sched.get("stops_travelled")
 
-            # Step 2: Get fare
-            if schedule_id and stops:
-                fare_params = {
-                    "schedule_id": schedule_id,
-                    "fare_class": fare_class,
-                    "stops_travelled": stops,
-                }
-                if debug:
-                    debug_info.append(f"**Chain step 2:** get_national_rail_fare({fare_params})")
-                fare_json = _execute_tool("get_national_rail_fare", fare_params, current_user_email)
-                results.append({"tool": "get_national_rail_fare", "params": fare_params,
-                                 "result": fare_json, "summary": fare_json})
+                if schedule_id and stops:
+                    # Step 2: Get fare for each schedule
+                    fare_params = {
+                        "schedule_id": schedule_id,
+                        "fare_class": fare_class,
+                        "stops_travelled": stops,
+                    }
+                    if debug:
+                        debug_info.append(f"**Chain step 2:** get_national_rail_fare({fare_params})")
+                    fare_json = _execute_tool("get_national_rail_fare", fare_params, current_user_email)
+                    results.append({"tool": "get_national_rail_fare", "params": fare_params,
+                                     "result": fare_json, "summary": fare_json})
 
-            # Step 3: Get available seats
-            if schedule_id and travel_date:
-                seat_params = {
-                    "schedule_id": schedule_id,
-                    "travel_date": travel_date,
-                    "fare_class": fare_class,
-                }
-                if debug:
-                    debug_info.append(f"**Chain step 3:** get_available_seats({seat_params})")
-                seat_json = _execute_tool("get_available_seats", seat_params, current_user_email)
-                results.append({"tool": "get_available_seats", "params": seat_params,
-                                 "result": seat_json, "summary": seat_json})
+                # Step 3: Get seats (only for first schedule to save time)
+                if schedule_id and travel_date and sched == avail_data[0]:
+                    seat_params = {
+                        "schedule_id": schedule_id,
+                        "travel_date": travel_date,
+                        "fare_class": fare_class,
+                    }
+                    if debug:
+                        debug_info.append(f"**Chain step 3:** get_available_seats({seat_params})")
+                    seat_json = _execute_tool("get_available_seats", seat_params, current_user_email)
+                    results.append({"tool": "get_available_seats", "params": seat_params,
+                                     "result": seat_json, "summary": seat_json})
     except (json.JSONDecodeError, KeyError, IndexError):
         pass
+
+    # Add seat preference info for the LLM
+    if seat_preference:
+        results.append({
+            "tool": "seat_preference",
+            "params": {"preference": seat_preference},
+            "result": json.dumps({"user_seat_preference": seat_preference}),
+            "summary": json.dumps({"user_seat_preference": seat_preference}),
+        })
 
     return results
 
@@ -896,12 +982,12 @@ def run_agent(
     _augmented_message = _inject_station_ids(user_message)
     _station_ids = _extract_station_ids(_augmented_message)
     _travel_date = _extract_date(user_message)
+    _fare_class = _extract_fare_class(user_message)
+    _ticket_type = _extract_ticket_type(user_message)
+    _seat_pref = _extract_seat_preference(user_message)
     _lower = _augmented_message.lower()
 
-    # Detect fare class from text
-    _fare_class = "first" if any(kw in _lower for kw in ["first class", "first", "頭等", "商務"]) else "standard"
-
-    # ── Step 2: Pre-classify the query ────────────────────────────────
+    # ── Step 2: Pre-classify ──────────────────────────────────────────
     category = _pre_classify_query(
         _augmented_message, _station_ids, _travel_date is not None, current_user_email
     )
@@ -929,23 +1015,84 @@ def run_agent(
     # ── Step 4: Handle based on category ──────────────────────────────
     tool_results = []
 
-    if category == "booking" and len(_station_ids) >= 2:
-        # OPTIMIZATION v4: Multi-step chaining for booking queries
-        # Automatically call availability + fare + seats in one turn
+    # ── CONFIRM: User confirmed a booking ─────────────────────────────
+    if category == "confirm":
         if debug:
-            debug_info.append("**Multi-step chain:** booking query detected, auto-chaining tools")
-        tool_results = _chain_booking_query(
-            origin_id=_station_ids[0],
-            destination_id=_station_ids[1],
-            travel_date=_travel_date,
-            fare_class=_fare_class,
-            current_user_email=current_user_email,
-            debug_info=debug_info,
-            debug=debug,
-        )
+            debug_info.append("**Confirmation detected** — recovering booking context from history.")
 
+        if not current_user_email:
+            # Not logged in — can't book
+            if debug:
+                debug_info.append("**Booking gate:** not logged in.")
+            tool_results.append({
+                "tool": "login_required",
+                "params": {},
+                "result": json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"}),
+                "summary": json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"}),
+            })
+        else:
+            # Recover booking context from history
+            booking_ctx = _recover_booking_context(history)
+            if booking_ctx:
+                if debug:
+                    debug_info.append(f"**Recovered booking context:** {booking_ctx}")
+                result_json = _execute_tool("make_booking", booking_ctx, current_user_email)
+                tool_results.append({
+                    "tool": "make_booking",
+                    "params": booking_ctx,
+                    "result": result_json,
+                    "summary": result_json,
+                })
+            else:
+                if debug:
+                    debug_info.append("**Failed to recover booking context** — not enough info in history.")
+                tool_results.append({
+                    "tool": "context_missing",
+                    "params": {},
+                    "result": json.dumps({"error": "很抱歉，找不到之前的訂票資訊。請重新提供訂票細節（出發站、目的站、日期、座位等級）。"}),
+                    "summary": json.dumps({"error": "找不到訂票資訊，請重新提供。"}),
+                })
+
+    # ── BOOKING: Pre-login check + multi-step chain ───────────────────
+    elif category == "booking" and len(_station_ids) >= 2:
+        # OPTIMIZATION v4.13: Check login BEFORE running the chain
+        if not current_user_email:
+            if debug:
+                debug_info.append("**Pre-login check:** not logged in, prompting login before booking chain.")
+            # Still run the chain to show info, but add login reminder
+            tool_results = _chain_booking_query(
+                origin_id=_station_ids[0], destination_id=_station_ids[1],
+                travel_date=_travel_date, fare_class=_fare_class,
+                seat_preference=_seat_pref,
+                current_user_email=current_user_email,
+                debug_info=debug_info, debug=debug,
+            )
+            tool_results.append({
+                "tool": "login_reminder",
+                "params": {},
+                "result": json.dumps({"reminder": "使用者尚未登入。查詢資料已顯示，但訂票需要先登入。請提醒使用者點右上角的登入按鈕。"}),
+                "summary": json.dumps({"reminder": "需要登入才能訂票"}),
+            })
+        else:
+            tool_results = _chain_booking_query(
+                origin_id=_station_ids[0], destination_id=_station_ids[1],
+                travel_date=_travel_date, fare_class=_fare_class,
+                seat_preference=_seat_pref,
+                current_user_email=current_user_email,
+                debug_info=debug_info, debug=debug,
+            )
+
+        # Add ticket type info
+        if _ticket_type != "single":
+            tool_results.append({
+                "tool": "ticket_type_info",
+                "params": {"ticket_type": _ticket_type},
+                "result": json.dumps({"requested_ticket_type": _ticket_type}),
+                "summary": json.dumps({"requested_ticket_type": _ticket_type}),
+            })
+
+    # ── ROUTE ─────────────────────────────────────────────────────────
     elif category == "route" and len(_station_ids) >= 2:
-        # Direct route call — no need for LLM routing
         _opt = "cost" if any(kw in _lower for kw in ["cheap", "cheapest", "最便宜"]) else "time"
         params = {"origin_id": _station_ids[0], "destination_id": _station_ids[1], "optimise_by": _opt}
         if debug:
@@ -954,8 +1101,8 @@ def run_agent(
         tool_results.append({"tool": "find_route", "params": params,
                               "result": result_json, "summary": result_json})
 
+    # ── AVAILABILITY ──────────────────────────────────────────────────
     elif category == "availability" and len(_station_ids) >= 2:
-        # Direct availability call
         o, d = _station_ids[0], _station_ids[1]
         tool_name = "check_national_rail_availability" if o.startswith("NR") else "check_metro_availability"
         params = {"origin_id": o, "destination_id": d}
@@ -967,11 +1114,10 @@ def run_agent(
         tool_results.append({"tool": tool_name, "params": params,
                               "result": result_json, "summary": result_json})
 
+    # ── FARE ──────────────────────────────────────────────────────────
     elif category == "fare" and len(_station_ids) >= 2:
-        # Direct fare call
         o, d = _station_ids[0], _station_ids[1]
         if o.startswith("NR"):
-            # Need availability first to get schedule_id and stops
             params = {"origin_id": o, "destination_id": d}
             if _travel_date:
                 params["travel_date"] = _travel_date
@@ -998,8 +1144,8 @@ def run_agent(
             tool_results.append({"tool": "get_metro_fare", "params": params,
                                   "result": result_json, "summary": result_json})
 
+    # ── POLICY ────────────────────────────────────────────────────────
     elif category == "policy":
-        # Direct policy search
         params = {"query": user_message}
         if debug:
             debug_info.append(f"**Direct call:** search_policy({params})")
@@ -1007,8 +1153,8 @@ def run_agent(
         tool_results.append({"tool": "search_policy", "params": params,
                               "result": result_json, "summary": result_json})
 
+    # ── PERSONAL ──────────────────────────────────────────────────────
     elif category == "personal":
-        # Use LLM with filtered tools for personal queries
         filtered_tools = _filter_tools(TOOLS, category)
         if llm.get_chat_provider() == "ollama":
             tool_calls = llm.ollama_tool_call(
@@ -1035,28 +1181,39 @@ def run_agent(
             tool_results.append({"tool": name, "params": params,
                                   "result": result_json, "summary": result_json})
 
+    # ── CANCEL ────────────────────────────────────────────────────────
     elif category == "cancel":
-        # Let LLM extract booking_id with filtered tools
-        filtered_tools = _filter_tools(TOOLS, category)
-        if llm.get_chat_provider() == "ollama":
-            tool_calls = llm.ollama_tool_call(
-                history[-4:] if len(history) > 4 else history,
-                filtered_tools, _augmented_message,
-                system_prompt="You are a tool router. Extract the booking ID and call cancel_booking.",
-            )
-        else:
-            tool_calls = []
-        if debug:
-            debug_info.append(f"**Tool selection (filtered):** {tool_calls}")
-        for call in tool_calls:
-            name = call.get("name", "")
-            params = call.get("params") or {}
-            result_json = _execute_tool(name, params, current_user_email)
-            tool_results.append({"tool": name, "params": params,
+        # Extract booking ID from message
+        bk_match = re.search(r'(BK-[A-Z0-9]+)', user_message, re.IGNORECASE)
+        if bk_match:
+            params = {"booking_id": bk_match.group(1)}
+            if debug:
+                debug_info.append(f"**Direct call:** cancel_booking({params})")
+            result_json = _execute_tool("cancel_booking", params, current_user_email)
+            tool_results.append({"tool": "cancel_booking", "params": params,
                                   "result": result_json, "summary": result_json})
+        else:
+            # No booking ID found — let LLM handle with filtered tools
+            filtered_tools = _filter_tools(TOOLS, category)
+            if llm.get_chat_provider() == "ollama":
+                tool_calls = llm.ollama_tool_call(
+                    history[-4:] if len(history) > 4 else history,
+                    filtered_tools, _augmented_message,
+                    system_prompt="Extract the booking ID and call cancel_booking.",
+                )
+            else:
+                tool_calls = []
+            if debug:
+                debug_info.append(f"**Tool selection (filtered):** {tool_calls}")
+            for call in tool_calls:
+                name = call.get("name", "")
+                params = call.get("params") or {}
+                result_json = _execute_tool(name, params, current_user_email)
+                tool_results.append({"tool": name, "params": params,
+                                      "result": result_json, "summary": result_json})
 
+    # ── DELAY ─────────────────────────────────────────────────────────
     elif category == "delay":
-        # Direct delay ripple — extract station from IDs
         if _station_ids:
             params = {"station_id": _station_ids[0], "hops": 2}
             if debug:
@@ -1066,13 +1223,6 @@ def run_agent(
                                   "result": result_json, "summary": result_json})
 
     # category == "general" → no tools, just chat
-
-    # ── Booking confirmation gate ─────────────────────────────────────
-    if any(tr["tool"] == "make_booking" for tr in tool_results):
-        if not _user_confirmed(history + [{"role": "user", "content": user_message}]):
-            tool_results = [tr for tr in tool_results if tr["tool"] != "make_booking"]
-            if debug:
-                debug_info.append("**Booking gate:** make_booking blocked — no confirmation.")
 
     # ── Step 5: Compose the final answer ──────────────────────────────
     _DB_KEYWORDS = {
@@ -1091,7 +1241,9 @@ def run_agent(
         content = (
             f"DATA FROM TRANSITFLOW DATABASE:\n{data_block}"
             f"\n\nUser asks: {user_message}"
-            f"\n\nAnswer using only the data above. Use emojis and clear formatting:"
+            f"\n\nAnswer using only the data above. Use emojis and clear formatting."
+            f"\nIf this is a booking query, show ALL available schedules and ask which one the user wants."
+            f"\nAlways include schedule_id, station IDs, and date in your response so the system can recover them later."
         )
     elif any(kw in user_message.lower() for kw in _DB_KEYWORDS):
         content = (
