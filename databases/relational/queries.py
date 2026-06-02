@@ -2,7 +2,7 @@
 # @Author: Your name
 # @Date:   2026-05-28 14:29:40
 # @Last Modified by:   Your name
-# @Last Modified time: 2026-05-28 20:19:30
+# @Last Modified time: 2026-06-02 15:20:20
 """
 TransitFlow — PostgreSQL / Relational Database Layer
 =====================================================
@@ -28,13 +28,9 @@ are already implemented — do not modify them.
 from __future__ import annotations
 
 import json
-<<<<<<< HEAD
 import random
 import string
 from datetime import date, datetime, timezone
-=======
-from datetime import datetime, timezone
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
 from decimal import Decimal
 from typing import Optional
 
@@ -80,51 +76,17 @@ def _gen_booking_id(cur) -> str:
     return _gen_prefixed_id(cur, "national_rail_bookings", "booking_id", "BK")
 
 
-<<<<<<< HEAD
 def _gen_user_id(cur) -> str:
     """Generate the next public user id, keeping the seeded RU01/RU02 style."""
     cur.execute(
         """
         SELECT COALESCE(MAX(SUBSTRING(user_id FROM 3)::int), 0) + 1 AS next_num
-=======
-# External payment IDs are short display references for inserted payments.
-def _gen_payment_id(cur) -> str:
-    """Create a short external payment code for newly inserted payments."""
-    return _gen_prefixed_id(cur, "payments", "payment_id", "PM")
-
-
-# External metro trip IDs follow the seeded MT001, MT002, ... sequence.
-def _gen_trip_id(cur) -> str:
-    """Create a short external trip code for newly inserted metro trips."""
-    return _gen_prefixed_id(cur, "metro_trips", "trip_id", "MT")
-
-
-# External feedback IDs follow the seeded FB001, FB002, ... sequence.
-def _gen_feedback_id(cur) -> str:
-    """Create a short external feedback code for newly inserted feedback."""
-    return _gen_prefixed_id(cur, "feedback", "feedback_id", "FB")
-
-
-# New users should continue the seeded RU01, RU02, ... display sequence.
-def _gen_user_id(cur) -> str:
-    """Create the next sequential external user code, such as RU21."""
-    # Existing seed users use RU01..RU20, so new accounts should continue that
-    # visible sequence instead of using random IDs like RU-ABC123.
-    cur.execute(
-        """
-        SELECT COALESCE(MAX(SUBSTRING(user_id FROM 3)::INTEGER), 0)
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
         FROM registered_users
         WHERE user_id ~ '^RU[0-9]+$'
         """
     )
-<<<<<<< HEAD
     next_num = cur.fetchone()[0]
     return f"RU{next_num:02d}"
-=======
-    next_number = cur.fetchone()[0] + 1
-    return f"RU{next_number:02d}"
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
 
 
 # ── Example ───────────────────────────────────────────────────────────────────
@@ -556,17 +518,12 @@ def query_user_profile(user_email: str) -> Optional[dict]:
 
 # Combine rail bookings and metro trips for "show my bookings" requests.
 def query_user_bookings(user_email: str) -> dict:
-<<<<<<< HEAD
     """
     Return a user's active booking/trip list (national rail + metro).
 
     Cancelled national rail bookings stay in the database for audit/payment
     history, but they are hidden from the normal "my bookings" view so users do
     not see cancelled tickets as active reservations.
-=======
-    """     
-    Return a user's combined booking history (national rail + metro).
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
 
     Returns:
         dict with keys 'national_rail' (list) and 'metro' (list)
@@ -604,11 +561,7 @@ def query_user_bookings(user_email: str) -> dict:
         JOIN national_rail_seats seat
             ON seat.id = booking.national_rail_seat_pk
         WHERE users.email = %s
-<<<<<<< HEAD
           AND booking.status <> 'cancelled'
-=======
-          AND users.is_active = TRUE
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
         ORDER BY booking.travel_date DESC, booking.departure_time DESC
     """
     metro_sql = """
@@ -1104,10 +1057,7 @@ def register_user(
     try:
         date_of_birth = date(birth_year, birth_month, birth_day)
         with conn.cursor() as cur:
-<<<<<<< HEAD
             cur.execute("LOCK TABLE registered_users IN SHARE ROW EXCLUSIVE MODE")
-=======
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
             user_id = _gen_user_id(cur)
             cur.execute(
                 """

@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Author: Your name
+# @Date:   2026-06-02 15:08:39
+# @Last Modified by:   Your name
+# @Last Modified time: 2026-06-02 15:21:58
 """
 TransitFlow — Gradio Web Interface
 ====================================
@@ -12,15 +17,11 @@ Optimizations (v2):
 """
 
 import sys
-<<<<<<< HEAD
 from datetime import date
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
-=======
-sys.path.insert(0, ".")
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
 
 import gradio as gr
 from skeleton.agent import run_agent
@@ -191,7 +192,6 @@ def do_logout():
     )
 
 
-<<<<<<< HEAD
 def do_register(
     email,
     first_name,
@@ -216,13 +216,6 @@ def do_register(
             str(secret_answer).strip(),
         ]
     ):
-=======
-def do_register(email, first_name, surname, year_of_birth, password, secret_question, secret_answer):
-    if not all([
-        str(email).strip(), str(first_name).strip(), str(surname).strip(),
-        str(password).strip(), secret_question, str(secret_answer).strip(),
-    ]):
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
         return (
             gr.update(value="所有欄位都是必填的，請全部填寫。", visible=True),
             None,
@@ -246,7 +239,6 @@ def do_register(email, first_name, surname, year_of_birth, password, secret_ques
         )
 
     ok, err = register_user(
-<<<<<<< HEAD
         email.strip(),
         first_name.strip(),
         surname.strip(),
@@ -256,10 +248,6 @@ def do_register(email, first_name, surname, year_of_birth, password, secret_ques
         password,
         secret_question,
         secret_answer.strip(),
-=======
-        email.strip(), first_name.strip(), surname.strip(),
-        year, password, secret_question, secret_answer.strip(),
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
     )
     if not ok:
         return (
@@ -387,18 +375,12 @@ with gr.Blocks(title="TransitFlow", theme=gr.themes.Soft()) as demo:
         gr.Markdown("### 建立帳號")
         with gr.Row():
             reg_first_name_in = gr.Textbox(label="名字")
-<<<<<<< HEAD
             reg_surname_in = gr.Textbox(label="姓氏")
         reg_email_in = gr.Textbox(label="Email", placeholder="your@email.com")
         with gr.Row():
             reg_year_in = gr.Textbox(label="出生年份", placeholder="1990")
             reg_month_in = gr.Textbox(label="出生月份", placeholder="3")
             reg_day_in = gr.Textbox(label="出生日期", placeholder="14")
-=======
-            reg_surname_in    = gr.Textbox(label="姓氏")
-        reg_email_in    = gr.Textbox(label="Email", placeholder="your@email.com")
-        reg_year_in     = gr.Textbox(label="出生年份", placeholder="例如：1990")
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
         reg_password_in = gr.Textbox(label="密碼", type="password")
         reg_question_in = gr.Dropdown(choices=SECRET_QUESTIONS, label="安全問題")
         reg_answer_in   = gr.Textbox(label="安全問題答案")
@@ -542,7 +524,6 @@ with gr.Blocks(title="TransitFlow", theme=gr.themes.Soft()) as demo:
     reg_submit_btn.click(
         fn=do_register,
         inputs=[
-<<<<<<< HEAD
             reg_email_in,
             reg_first_name_in,
             reg_surname_in,
@@ -552,10 +533,6 @@ with gr.Blocks(title="TransitFlow", theme=gr.themes.Soft()) as demo:
             reg_password_in,
             reg_question_in,
             reg_answer_in,
-=======
-            reg_email_in, reg_first_name_in, reg_surname_in,
-            reg_year_in, reg_password_in, reg_question_in, reg_answer_in,
->>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
         ],
         outputs=[
             reg_error_msg, current_user_state,
@@ -581,12 +558,11 @@ with gr.Blocks(title="TransitFlow", theme=gr.themes.Soft()) as demo:
         outputs=[forgot_msg],
     )
 
-
 if __name__ == "__main__":
     demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,
-        theme=gr.themes.Soft(),
+    server_name="0.0.0.0",
+    server_port=7860,
+    share=False,
+    theme=gr.themes.Soft(),
     )
 
