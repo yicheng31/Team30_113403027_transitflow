@@ -69,18 +69,18 @@ Q21 我想訂 2026-06-20 從 Central Station NR01 到 Langford End NR10 的 stan
 -> get_national_rail_fare(schedule_id="NR_SCH03", fare_class="standard", stops_travelled=5)
 -> get_available_seats(schedule_id="NR_SCH03", travel_date="2026-06-20", fare_class="standard")
 
-Q22 我要訂 2026-06-15 NR_SCH01，從 NR01 到 NR05，standard class，座位 B05。
+Q22 我要訂 2026-06-15 NR_SCH01，從 NR01 到 NR05，standard class，座位 B05。 //有問題?
 -> check_national_rail_availability(origin_id="NR01", destination_id="NR05", travel_date="2026-06-15")
 -> get_national_rail_schedule_fares(schedule_id="NR_SCH01")
 -> get_available_seats(schedule_id="NR_SCH01", travel_date="2026-06-15", fare_class="standard")
 
-Q23 確認，幫我完成訂票。
+Q23 確認，幫我完成訂票。//有問題?
 -> make_booking(schedule_id="<from previous context>", origin_station_id="<from previous context>", destination_station_id="<from previous context>", travel_date="<from previous context>", fare_class="<from previous context>", seat_id="<from previous context>", ticket_type="<from previous context or single>")
 
-Q24 請取消 booking BK001。
+Q24 請取消 booking BK001。//有問題
 -> cancel_booking(booking_id="BK001")
 
-Q25 我要取消我的 booking BK020。
+Q25 我要取消我的 booking BK020。//有問題
 -> cancel_booking(booking_id="BK020")
 
 Q26 請取消剛剛那張票。
@@ -130,7 +130,7 @@ Q39 從 Central Square MS01 到 Langford End NR10 最低票價路線是什麼？
 Q40 從 Thornton MS20 到 Langford End NR10，如果想避開 Ferndale MS15，有沒有 alternative route？
 -> find_alternative_routes(origin_id="MS20", destination_id="NR10", avoid_station_id="MS15", network="auto")
 
-Q41 從 Central Square MS01 到 Langford End NR10，避開 Old Town MS07。 // tool selection有問題
+Q41 從 Central Square MS01 到 Langford End NR10，避開 Old Town MS07。 // network有時候會選錯 有問題
 -> find_alternative_routes(origin_id="MS01", destination_id="NR10", avoid_station_id="MS07", network="auto")
 
 Q42 從 NR01 到 NR10，避開 NR07。
@@ -168,17 +168,17 @@ SECTION C - Full demo flows
 Flow 1 Logged-in booking demo
 1. 查詢我的會員資料。
 -> get_user_profile()
-2. 我想訂 2026-06-20 從 Central Station NR01 到 Langford End NR10 的 standard class 車票。
+2. 我想訂 2026-06-20 從 Central Station NR01 到 Langford End NR10 的 standard class 車票。 //有問題
 -> check_national_rail_availability(origin_id="NR01", destination_id="NR10", travel_date="2026-06-20")
 -> get_national_rail_fare(schedule_id="NR_SCH03", fare_class="standard", stops_travelled=5)
 -> get_available_seats(schedule_id="NR_SCH03", travel_date="2026-06-20", fare_class="standard")
-3. 確認，幫我完成訂票。
+3. 確認，幫我完成訂票。 //有問題
 -> make_booking(...)
 4. 查詢我的訂票紀錄。
 -> get_user_bookings()
 5. 如果我現在取消，可以退多少？
 -> search_policy(query="如果我現在取消，可以退多少？")
-6. 請取消 booking <剛剛回傳的 booking_id>。
+6. 請取消 booking <剛剛回傳的 booking_id>。 //有問題
 -> cancel_booking(booking_id="<booking_id from previous context>")
 7. 再查一次我的訂票紀錄。
 -> get_user_bookings()
