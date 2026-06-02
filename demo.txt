@@ -130,7 +130,7 @@ Q39 從 Central Square MS01 到 Langford End NR10 最低票價路線是什麼？
 Q40 從 Thornton MS20 到 Langford End NR10，如果想避開 Ferndale MS15，有沒有 alternative route？
 -> find_alternative_routes(origin_id="MS20", destination_id="NR10", avoid_station_id="MS15", network="auto")
 
-Q41 從 Central Square MS01 到 Langford End NR10，避開 Old Town MS07。
+Q41 從 Central Square MS01 到 Langford End NR10，避開 Old Town MS07。 // tool selection有問題
 -> find_alternative_routes(origin_id="MS01", destination_id="NR10", avoid_station_id="MS07", network="auto")
 
 Q42 從 NR01 到 NR10，避開 NR07。
@@ -154,7 +154,7 @@ Q47 如果 Old Town MS07 延誤，3 hops 內會影響哪些站和線路？
 Q48 如果 Central Station NR01 延誤，2 hops 內會影響哪些站？
 -> get_delay_ripple(station_id="NR01", hops=2)
 
-Q49 MS15 hops=0 會回傳什麼？
+Q49 MS15 hops=0 會回傳什麼？ // 有問題
 -> get_delay_ripple(station_id="MS15", hops=0)
 
 Q50 MS01 有哪些直接相鄰的站？
@@ -229,3 +229,66 @@ Q58 訂NR_SCH03
 
 Q59 取消BK001
 -> cancel_booking(booking_id="BK001")
+
+BMS-demo 老師可能會出的刁鑽問題（Demo / Defense Checklist）
+
+A. Tool Routing
+1. 從 MS01 到 NR10，避開 MS07。
+預期: find_alternative_routes(..., network="auto")
+重點: MS→NR 必須跨 network。
+
+2. 從 NR01 到 NR10，避開 NR07。
+預期: 無可行路線。
+重點: NR07 是必經站。
+
+B. Delay Ripple
+3. 如果 Ferndale MS15 延誤，2 hops 內受影響哪些站？
+預期: get_delay_ripple(MS15,2)
+追問: 為什麼 NR07 也受影響？
+答: INTERCHANGE_TO。
+
+4. MS15 hops=0 會回傳什麼？
+預期: 只回傳 MS15 自己。
+
+C. Booking
+5. 我要訂票。
+重點: 資訊不足時應追問。
+
+6. 我要訂票 → 確認
+重點: 是否真的觸發 make_booking。
+
+7. 未登入直接訂票。
+重點: 是否要求登入。
+
+D. 不存在資料
+8. NR_SCH99 的票價是多少？
+9. BK99999 可以取消嗎？
+10. NR99 到 NR01 有哪些服務？
+重點: 不可 hallucinate。
+
+E. Graph
+11. Thornton MS20 → Langford End NR10 最快怎麼走？
+12. Thornton MS20 → Langford End NR10 最便宜怎麼走？
+重點: 路線應可能不同。
+
+13. Thornton MS20 → Langford End NR10，避開 Ferndale MS15。
+重點: path 不應出現 MS15。
+
+F. 權限
+14. Alice 有哪些訂票紀錄？
+15. Alice 的付款資訊是什麼？
+重點: 只能查 current_user。
+
+G. Interchange
+16. MS01 → NR01 怎麼轉乘？
+重點: INTERCHANGE_TO，票價 0。
+
+Demo 前必測：
+1. 確認是否 make_booking
+2. MS15 hops=0
+3. MS01 → NR10 避開 MS07
+4. BK99999 取消
+5. NR_SCH99 票價
+6. Alice 權限
+7. Cheapest vs Fastest
+
