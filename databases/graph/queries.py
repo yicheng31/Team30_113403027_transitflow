@@ -41,7 +41,26 @@ def _station_dict(node) -> dict:
         "name": node.get("name"),
         "network": node.get("network"),
         "lines": list(node.get("lines") or []),
+        "interchange_metro_station_id": node.get("interchange_metro_station_id"),
+        "interchange_national_rail_station_id": node.get(
+            "interchange_national_rail_station_id"
+        ),
     }
+
+
+def _physical_station_key(station: dict) -> str:
+    """Return a stable key for one physical station across interchange IDs.
+
+    Metro and national rail interchange pairs are represented by two graph nodes
+    (for example MS01 and NR01).  Route search should allow a direct
+    INTERCHANGE_TO edge between the pair, but it should not leave that physical
+    station and later come back through the other ID; that creates visually
+    circular alternative paths.
+    """
+    station_id = station["station_id"]
+    metro_pair = station.get("interchange_metro_station_id")
+    rail_pair = station.get("interchange_national_rail_station_id")
+    return min(filter(None, [station_id, metro_pair, rail_pair]))
 
 
 def _leg_dict(start_node, rel, end_node) -> dict:
@@ -122,8 +141,12 @@ def _load_graph() -> tuple[dict[str, dict], dict[str, list[dict]]]:
                             "relationship": _relationship_type(rel),
                             "line": rel.get("line"),
                             "travel_time_min": rel.get("travel_time_min", 0),
-                            "fare_standard_usd": float(rel.get("fare_standard_usd", 0) or 0),
-                            "fare_first_usd": float(rel.get("fare_first_usd", 0) or 0),
+                            "fare_standard_usd": float(
+                                rel.get("fare_standard_usd", 0) or 0
+                            ),
+                            "fare_first_usd": float(
+                                rel.get("fare_first_usd", 0) or 0
+                            ),
                         }
                     )
     return stations, edges
@@ -197,17 +220,30 @@ def _route_query(
         return []
 
     max_routes = max(1, int(limit or 1))
-    # We use an in-memory Dijkstra-style traversal instead of APOC so the
-    # coursework can run on the default Neo4j image without extra plugins.
-    # The heap priority is the accumulated edge weight (time or fare), which
-    # is equivalent to weighted shortest-path search for this small graph.
-    queue: list[tuple[float, int, str, list[tuple[str, dict]], set[str]]] = [
-        (0.0, 0, origin_id, [], {origin_id})
-    ]
+    origin_physical_key = _physical_station_key(stations[origin_id])
+    destination_physical_key = _physical_station_key(stations[destination_id])
+    avoid_physical_key = (
+        _physical_station_key(stations[avoid_station_id])
+        if avoid_station_id in stations
+        else None
+    )
+    if avoid_physical_key in {origin_physical_key, destination_physical_key}:
+        return []
+
+    queue: list[
+        tuple[
+            float,
+            int,
+            str,
+            list[tuple[str, dict]],
+            set[str],
+            set[str],
+        ]
+    ] = [(0.0, 0, origin_id, [], {origin_id}, {origin_physical_key})]
     routes: list[dict] = []
     tie_breaker = 1
     while queue and len(routes) < max_routes:
-        _, _, current_id, path_edges, visited = heapq.heappop(queue)
+        _, _, current_id, path_edges, visited, visited_physical = heapq.heappop(queue)
         if current_id == destination_id:
             route = _build_route(origin_id, destination_id, stations, path_edges)
             if optimise_by == "fare":
@@ -217,19 +253,43 @@ def _route_query(
             routes.append(route)
             continue
 
+        current_physical_key = _physical_station_key(stations[current_id])
         for edge in edges.get(current_id, []):
             next_id = edge["to"]
             if next_id in visited:
                 continue
-            if avoid_station_id and next_id == avoid_station_id and next_id != destination_id:
-                continue
             if not _edge_allowed(edge, relationship_filter):
                 continue
+
+            next_physical_key = _physical_station_key(stations[next_id])
+            if avoid_physical_key and next_physical_key == avoid_physical_key:
+                continue
+            direct_interchange = (
+                edge["relationship"] == "INTERCHANGE_TO"
+                and current_physical_key == next_physical_key
+            )
+            if next_physical_key in visited_physical and not direct_interchange:
+                continue
+
             next_path = path_edges + [(current_id, edge)]
             next_visited = set(visited)
             next_visited.add(next_id)
-            cost = sum(_edge_cost(item, optimise_by, fare_property) for _, item in next_path)
-            heapq.heappush(queue, (cost, tie_breaker, next_id, next_path, next_visited))
+            next_visited_physical = set(visited_physical)
+            next_visited_physical.add(next_physical_key)
+            cost = sum(
+                _edge_cost(item, optimise_by, fare_property) for _, item in next_path
+            )
+            heapq.heappush(
+                queue,
+                (
+                    cost,
+                    tie_breaker,
+                    next_id,
+                    next_path,
+                    next_visited,
+                    next_visited_physical,
+                ),
+            )
             tie_breaker += 1
     return routes
 
@@ -282,15 +342,13 @@ def query_alternative_routes(
     avoid_station_id: str,
     network: str = "auto",
     max_routes: int = 3,
-) -> list[dict]:
+) -> list[list[dict]]:
     """
-    Find complete route dictionaries for paths that avoid a station.
+    Find route legs for paths that avoid a specific intermediate station.
+    """
+    if avoid_station_id in {origin_id, destination_id}:
+        return []
 
-    The live/static rubric expects each route to keep the same shape as the
-    shortest-path functions (path + metric). Returning complete route objects
-    also gives the UI enough context to display station names, legs, and total
-    travel time without re-querying Neo4j.
-    """
     routes = _route_query(
         origin_id=origin_id,
         destination_id=destination_id,
@@ -299,7 +357,7 @@ def query_alternative_routes(
         avoid_station_id=avoid_station_id,
         limit=max_routes,
     )
-    return routes
+    return [route["legs"] for route in routes]
 
 
 def query_interchange_path(origin_id: str, destination_id: str) -> dict:
@@ -334,21 +392,13 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     """
     Find all stations within N hops of a delayed or disrupted station.
     """
-    try:
-        hops = int(hops)
-    except (TypeError, ValueError):
-        hops = 2
-    hops = max(0, min(hops, 6))
-
+    hops = max(1, min(int(hops or 2), 6))
     stations, edges = _load_graph()
     if delayed_station_id not in stations:
         return []
 
-    # Include the disrupted station at distance 0. This satisfies the live-test
-    # edge case where hops=0 must return only the delayed station, and it keeps
-    # the result mathematically consistent for “within N hops” queries.
-    best: dict[str, tuple[int, set[str]]] = {delayed_station_id: (0, set())}
     queue: list[tuple[str, int, set[str]]] = [(delayed_station_id, 0, set())]
+    best: dict[str, tuple[int, set[str]]] = {}
     seen_depth: dict[str, int] = {delayed_station_id: 0}
 
     while queue:
@@ -361,14 +411,17 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
             next_lines = set(lines)
             if edge.get("line"):
                 next_lines.add(edge["line"])
+            if next_id == delayed_station_id:
+                continue
             previous_depth = seen_depth.get(next_id)
             if previous_depth is not None and previous_depth < next_depth:
                 continue
-            if previous_depth == next_depth:
-                best[next_id][1].update(next_lines)
-                continue
             seen_depth[next_id] = next_depth
-            best[next_id] = (next_depth, next_lines)
+            current_best = best.get(next_id)
+            if current_best is None or next_depth < current_best[0]:
+                best[next_id] = (next_depth, next_lines)
+            else:
+                current_best[1].update(next_lines)
             queue.append((next_id, next_depth, next_lines))
 
     return [
@@ -404,4 +457,6 @@ def query_station_connections(station_id: str) -> list[dict]:
     """
     with _driver() as driver:
         with driver.session() as session:
-            return [dict(record) for record in session.run(cypher, station_id=station_id)]
+            return [
+                dict(record) for record in session.run(cypher, station_id=station_id)
+            ]
