@@ -197,8 +197,15 @@ class LLMProvider:
             "stream": False,
         }
 
-        r = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
-        r.raise_for_status()
+        try:
+            r = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            detail = ""
+            response = getattr(e, "response", None)
+            if response is not None:
+                detail = f" Response: {response.text[:500]}"
+            raise ConnectionError(f"Ollama chat failed: {e}.{detail}") from e
         return r.json()["message"]["content"]
 
     def _ollama_embed(self, text: str) -> List[float]:
@@ -258,8 +265,15 @@ class LLMProvider:
             "tools":   ollama_tools,
             "stream":  False,
         }
-        r = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
-        r.raise_for_status()
+        try:
+            r = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            detail = ""
+            response = getattr(e, "response", None)
+            if response is not None:
+                detail = f" Response: {response.text[:500]}"
+            raise ConnectionError(f"Ollama tool call failed: {e}.{detail}") from e
 
         raw_calls = r.json().get("message", {}).get("tool_calls", [])
         return [

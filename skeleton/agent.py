@@ -24,6 +24,7 @@ from databases.graph.queries import (
     query_delay_ripple,
     query_interchange_path,
     query_shortest_route,
+    query_station_connections,
 )
 from databases.relational.queries import (
     execute_booking,
@@ -128,6 +129,18 @@ def _inject_station_ids(text: str) -> str:
     return result
 
 
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    seen = set()
+    unique = []
+    for value in values:
+        upper_value = value.upper()
+        if upper_value in seen:
+            continue
+        seen.add(upper_value)
+        unique.append(upper_value)
+    return unique
+
+
 SYSTEM_PROMPT = """You are TransitFlow, a friendly and patient transit assistant for a dual-network system.
 
 Networks: City Metro MS01-MS20 (lines M1-M4) | National Rail NR01-NR10 (lines NR1-NR2)
@@ -195,6 +208,20 @@ TOOLS = [
         "required": ["schedule_id"],
     },
     {
+        "name": "get_national_rail_journey_fares",
+        "description": (
+            "Get national rail fares between two national rail stations. "
+            "Use when the user asks the price, cost, or fare from one NR station to another."
+        ),
+        "parameters": {
+            "origin_id": {"type": "string", "description": "National rail station ID e.g. NR01"},
+            "destination_id": {"type": "string", "description": "National rail station ID e.g. NR05"},
+            "travel_date": {"type": "string", "description": "YYYY-MM-DD, optional"},
+            "fare_class": {"type": "string", "description": "standard, first, or all"},
+        },
+        "required": ["origin_id", "destination_id"],
+    },
+    {
         "name": "check_metro_availability",
         "description": "Check available metro services between two metro stations.",
         "parameters": {
@@ -253,6 +280,23 @@ TOOLS = [
             "fare_class": {"type": "string", "description": "standard or first"},
         },
         "required": ["schedule_id", "travel_date", "fare_class"],
+    },
+    {
+        "name": "booking_preflight",
+        "description": (
+            "Check national rail availability, fare, and seats before booking. "
+            "Use for booking requests before the user explicitly confirms."
+        ),
+        "parameters": {
+            "schedule_id": {"type": "string", "description": "e.g. NR_SCH01, optional"},
+            "origin_station_id": {"type": "string", "description": "e.g. NR01"},
+            "destination_station_id": {"type": "string", "description": "e.g. NR05"},
+            "travel_date": {"type": "string", "description": "YYYY-MM-DD"},
+            "fare_class": {"type": "string", "description": "standard or first"},
+            "seat_id": {"type": "string", "description": "Seat ID or any, optional"},
+            "ticket_type": {"type": "string", "description": "single or return"},
+        },
+        "required": ["origin_station_id", "destination_station_id", "travel_date", "fare_class"],
     },
     {
         "name": "make_booking",
@@ -322,6 +366,14 @@ TOOLS = [
         },
         "required": ["station_id"],
     },
+    {
+        "name": "get_station_connections",
+        "description": "List direct outbound graph connections from one station.",
+        "parameters": {
+            "station_id": {"type": "string", "description": "Station ID e.g. MS01 or NR01"},
+        },
+        "required": ["station_id"],
+    },
 ]
 
 TOOLS_SCHEMA = """\
@@ -329,9 +381,12 @@ find_route(origin_id, destination_id, optimise_by?)
 check_national_rail_availability(origin_id, destination_id, travel_date?)
 get_national_rail_fare(schedule_id, fare_class, stops_travelled)
 get_national_rail_schedule_fares(schedule_id)
+get_national_rail_journey_fares(origin_id, destination_id, travel_date?, fare_class?)
 check_metro_availability(origin_id, destination_id)
 calculate_metro_fare(schedule_id, stops_travelled)
+get_metro_fare(origin_id, destination_id)
 get_available_seats(schedule_id, travel_date, fare_class)
+booking_preflight(schedule_id?, origin_station_id, destination_station_id, travel_date, fare_class, seat_id?, ticket_type?)
 make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, fare_class, seat_id, ticket_type?)
 cancel_booking(booking_id)
 get_user_bookings()
@@ -339,7 +394,8 @@ get_user_profile()
 get_payment_info(booking_id)
 search_policy(query)
 find_alternative_routes(origin_id, destination_id, avoid_station_id, network?)
-get_delay_ripple(station_id, hops?)"""
+get_delay_ripple(station_id, hops?)
+get_station_connections(station_id)"""
 
 
 def _execute_tool(
@@ -359,6 +415,39 @@ def _execute_tool(
             result = query_national_rail_schedule_fares(params["schedule_id"])
             if not result:
                 return json.dumps({"error": f"找不到班次 {params['schedule_id']} 的票價資料。"})
+
+        elif tool_name == "get_national_rail_journey_fares":
+            origin_id = params["origin_id"]
+            destination_id = params["destination_id"]
+            travel_date = params.get("travel_date")
+            requested_class = params.get("fare_class", "all")
+            classes = ["standard", "first"] if requested_class in ("", "all", None) else [requested_class]
+            schedules = query_national_rail_availability(
+                origin_id=origin_id,
+                destination_id=destination_id,
+                travel_date=travel_date,
+            )
+            if not schedules:
+                result = {
+                    "error": "很抱歉，找不到這兩個國鐵站之間的服務。請確認站點代碼或方向是否正確。"
+                }
+            else:
+                priced_services = []
+                for schedule in schedules:
+                    fares = []
+                    for fare_class in classes:
+                        fare = query_national_rail_fare(
+                            schedule_id=schedule["schedule_id"],
+                            fare_class=fare_class,
+                            stops_travelled=schedule["stops_travelled"],
+                        )
+                        if fare:
+                            fares.append(fare)
+                    priced_services.append({
+                        **schedule,
+                        "fares": fares,
+                    })
+                result = priced_services
 
         elif tool_name == "check_metro_availability":
             result = query_metro_schedules(
@@ -492,14 +581,14 @@ def _execute_tool(
                 origin_id.upper().startswith("NR")
                 and destination_id.upper().startswith("MS")
             )
-            if is_cross:
-                result = query_interchange_path(origin_id, destination_id)
-            elif optimise_by == "cost":
+            if optimise_by == "cost":
                 result = query_cheapest_route(
                     origin_id=origin_id,
                     destination_id=destination_id,
                     network=network,
                 )
+            elif is_cross:
+                result = query_interchange_path(origin_id, destination_id)
             else:
                 result = query_shortest_route(
                     origin_id=origin_id,
@@ -521,6 +610,9 @@ def _execute_tool(
                 delayed_station_id=params["station_id"],
                 hops=params.get("hops", 2),
             )
+
+        elif tool_name == "get_station_connections":
+            result = query_station_connections(params["station_id"])
 
         else:
             result = {"error": f"很抱歉，發生未知錯誤（{tool_name}）。請稍後再試。"}
@@ -577,6 +669,7 @@ def _summarise_result(tool_name: str, result_json: str) -> str:
 
 
 def _parse_tool_calls(llm_response: str) -> list[dict] | None:
+    """Extract tool calls from Gemini text, including slightly nonstandard JSON."""
     text = llm_response.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
@@ -592,7 +685,73 @@ def _parse_tool_calls(llm_response: str) -> list[dict] | None:
             continue
         if "tool_calls" in data:
             return data["tool_calls"]
+        if "tools" in data:
+            return data["tools"]
+        if "calls" in data:
+            return data["calls"]
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, list):
+        return data
     return None
+
+
+def _normalise_tool_params(tool_name: str, params: dict) -> dict:
+    """Clean Gemini router output before passing values to query functions."""
+    cleaned = dict(params)
+
+    for key in (
+        "origin_id",
+        "destination_id",
+        "station_id",
+        "avoid_station_id",
+        "origin_station_id",
+        "destination_station_id",
+        "schedule_id",
+        "booking_id",
+        "seat_id",
+    ):
+        if isinstance(cleaned.get(key), str):
+            cleaned[key] = cleaned[key].strip().upper()
+
+    if isinstance(cleaned.get("fare_class"), str):
+        fare_class = cleaned["fare_class"].strip().lower().replace("-", " ")
+        if fare_class in {"first class", "1st", "first"}:
+            cleaned["fare_class"] = "first"
+        elif fare_class in {"standard class", "standard", "economy"}:
+            cleaned["fare_class"] = "standard"
+        elif fare_class in {"all", "both", "any"}:
+            cleaned["fare_class"] = "all"
+
+    if isinstance(cleaned.get("ticket_type"), str):
+        ticket_type = cleaned["ticket_type"].strip().lower().replace("-", " ")
+        if "return" in ticket_type:
+            cleaned["ticket_type"] = "return"
+        else:
+            cleaned["ticket_type"] = "single"
+
+    if isinstance(cleaned.get("optimise_by"), str):
+        optimise_by = cleaned["optimise_by"].strip().lower()
+        if optimise_by in {"cost", "fare", "price", "cheap", "cheapest", "lowest cost"}:
+            cleaned["optimise_by"] = "cost"
+        else:
+            cleaned["optimise_by"] = "time"
+
+    if isinstance(cleaned.get("network"), str):
+        network = cleaned["network"].strip().lower().replace("-", "_")
+        if network in {"national_rail", "national rail", "nr", "train"}:
+            cleaned["network"] = "rail"
+        elif network in {"city_metro", "city metro", "ms", "metro"}:
+            cleaned["network"] = "metro"
+        else:
+            cleaned["network"] = "auto"
+
+    if tool_name == "get_national_rail_journey_fares":
+        cleaned.setdefault("fare_class", "all")
+
+    return cleaned
 
 
 def _user_confirmed(history: list[dict]) -> bool:
@@ -603,8 +762,242 @@ def _user_confirmed(history: list[dict]) -> bool:
         (m["content"].lower() for m in reversed(history) if m["role"] == "user"),
         "",
     )
-    confirm_words = {"confirm", "yes", "確認", "好", "ok", "好的", "沒問題", "訂吧", "訂了"}
+    confirm_words = {
+        "confirm",
+        "yes",
+        "ok",
+        "確認",
+        "確定",
+        "確定訂票",
+        "好",
+        "好的",
+        "沒問題",
+        "訂吧",
+        "訂了",
+        "幫我訂",
+        "完成訂票",
+    }
     return any(word in last_user for word in confirm_words)
+
+
+def _llm_confirms_booking(user_message: str, history: list[dict]) -> bool:
+    """
+    Ask Gemini whether the latest message confirms the pending booking.
+
+    The classifier is advisory only: make_booking still requires complete
+    booking parameters before the write operation can run.
+    """
+    if not history or llm.get_chat_provider() != "gemini":
+        return False
+
+    context = _history_text(history, limit=6)
+    prompt = f"""Recent conversation:
+{context}
+
+Latest user message:
+{user_message}
+
+Question: Does the latest user message explicitly confirm the pending booking?
+Return only JSON: {{"confirmed": true}} or {{"confirmed": false}}."""
+    try:
+        response = llm.chat(
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt=(
+                "You are a strict booking confirmation classifier. "
+                "Return only JSON. Treat new booking requests, questions, changes, "
+                "or uncertainty as confirmed=false."
+            ),
+        )
+    except Exception:
+        return False
+
+    try:
+        data = json.loads(response.strip())
+    except json.JSONDecodeError:
+        return response.strip().lower().startswith("true")
+    return bool(data.get("confirmed"))
+
+
+def _booking_confirmed(user_message: str, history: list[dict]) -> tuple[bool, str]:
+    """Combine keyword confirmation with Gemini semantic confirmation."""
+    if _user_confirmed(history + [{"role": "user", "content": user_message}]):
+        return True, "keyword"
+
+    # Only ask Gemini if there is prior booking context to confirm. This keeps a
+    # first-time "I want to book..." request from being treated as confirmation.
+    pending_params = _extract_booking_params(_history_text(history))
+    if not pending_params:
+        return False, "none"
+
+    if _llm_confirms_booking(user_message, history):
+        return True, "gemini"
+    return False, "none"
+
+
+def _tool_result(tool_name: str, params: dict, result_json: str) -> dict:
+    """Keep raw JSON and final summary together for debug output and final prompting."""
+    return {
+        "tool": tool_name,
+        "params": params,
+        "result": result_json,
+        "summary": _summarise_result(tool_name, result_json),
+    }
+
+
+def _extract_booking_params(text: str) -> dict:
+    """Recover booking fields from a natural-language request or recent chat history."""
+    station_ids = _unique_preserve_order(re.findall(r"(NR\d{2})", text, re.IGNORECASE))
+    schedule_ids = _unique_preserve_order(re.findall(r"(NR_SCH\d{2})", text, re.IGNORECASE))
+    date_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", text)
+    seat_match = re.search(r"\b[A-Z]\d{2}\b", text, re.IGNORECASE)
+
+    params: dict = {}
+    if schedule_ids:
+        params["schedule_id"] = schedule_ids[-1]
+    if len(station_ids) >= 2:
+        params["origin_station_id"] = station_ids[0]
+        params["destination_station_id"] = station_ids[1]
+    if date_match:
+        params["travel_date"] = date_match.group(0)
+
+    lowered = text.lower()
+    if "first" in lowered or "頭等" in lowered:
+        params["fare_class"] = "first"
+    elif "standard" in lowered or "標準" in lowered:
+        params["fare_class"] = "standard"
+
+    if seat_match:
+        params["seat_id"] = seat_match.group(0).upper()
+    elif "any" in lowered or "任意" in lowered:
+        params["seat_id"] = "any"
+
+    params["ticket_type"] = "return" if "return" in lowered or "來回" in lowered else "single"
+    return params
+
+
+def _history_text(history: list[dict], limit: int = 8) -> str:
+    return "\n".join(str(item.get("content", "")) for item in history[-limit:])
+
+
+def _redirect_unconfirmed_booking_calls(tool_calls: list[dict], confirmed: bool) -> list[dict]:
+    """Never let an unconfirmed booking request reach the write-operation tool."""
+    if confirmed:
+        return tool_calls
+    redirected = []
+    for call in tool_calls:
+        if call.get("name") == "make_booking":
+            redirected.append({
+                "name": "booking_preflight",
+                "params": call.get("params") or call.get("parameters", {}),
+            })
+        else:
+            redirected.append(call)
+    return redirected
+
+
+def _booking_preflight_results(
+    booking_params: dict,
+    current_user_email: Optional[str],
+) -> list[dict]:
+    """
+    Run the read-only checks needed before booking.
+
+    This intentionally uses availability, fare, and seat lookups instead of
+    make_booking until the user explicitly confirms the exact service and seat.
+    """
+    booking_params = _normalise_tool_params("make_booking", booking_params)
+    origin_id = booking_params.get("origin_station_id")
+    destination_id = booking_params.get("destination_station_id")
+    travel_date = booking_params.get("travel_date")
+    fare_class = booking_params.get("fare_class", "standard")
+
+    missing = [
+        label
+        for label, value in (
+            ("origin_station_id", origin_id),
+            ("destination_station_id", destination_id),
+            ("travel_date", travel_date),
+            ("fare_class", fare_class),
+        )
+        if not value
+    ]
+    if missing:
+        result_json = json.dumps({
+            "error": (
+                "訂票前需要先補齊資料："
+                + ", ".join(missing)
+                + "。請提供出發站、目的地、日期與艙等。"
+            )
+        })
+        return [_tool_result("booking_preflight", booking_params, result_json)]
+
+    results = []
+    availability_params = {
+        "origin_id": origin_id,
+        "destination_id": destination_id,
+        "travel_date": travel_date,
+    }
+    availability_json = _execute_tool(
+        "check_national_rail_availability",
+        availability_params,
+        current_user_email,
+    )
+    results.append(
+        _tool_result(
+            "check_national_rail_availability",
+            availability_params,
+            availability_json,
+        )
+    )
+
+    try:
+        schedules = json.loads(availability_json)
+    except json.JSONDecodeError:
+        schedules = []
+    if not isinstance(schedules, list):
+        schedules = []
+
+    bookable_schedules = [
+        schedule for schedule in schedules
+        if schedule.get("availability_status") == "available"
+        and int(schedule.get("available_seats") or 0) > 0
+    ]
+
+    schedule_hint = booking_params.get("schedule_id")
+    if schedule_hint:
+        matching = [
+            schedule for schedule in bookable_schedules
+            if schedule.get("schedule_id") == schedule_hint
+        ]
+        if matching:
+            bookable_schedules = matching
+
+    for schedule in bookable_schedules[:3]:
+        fare_params = {
+            "schedule_id": schedule["schedule_id"],
+            "fare_class": fare_class,
+            "stops_travelled": schedule["stops_travelled"],
+        }
+        fare_json = _execute_tool(
+            "get_national_rail_fare",
+            fare_params,
+            current_user_email,
+        )
+        results.append(_tool_result("get_national_rail_fare", fare_params, fare_json))
+
+        seats_params = {
+            "schedule_id": schedule["schedule_id"],
+            "travel_date": travel_date,
+            "fare_class": fare_class,
+        }
+        seats_json = _execute_tool(
+            "get_available_seats",
+            seats_params,
+            current_user_email,
+        )
+        results.append(_tool_result("get_available_seats", seats_params, seats_json))
+
+    return results
 
 
 def run_agent(
@@ -638,17 +1031,30 @@ def run_agent(
     recent_history = history[-4:] if len(history) > 4 else history
     augmented_message = _inject_station_ids(user_message)
 
+    # Gemini is stronger than Ollama, but we still ask for a tiny JSON routing
+    # decision so database access remains explicit and inspectable in debug mode.
     tool_selection_prompt = f"""Output only this JSON (no other text):
 {{"tool_calls": [{{"name": "TOOL", "params": {{"KEY": "VALUE"}}}}]}}
 Or if no tool needed: {{"tool_calls": []}}
 
 STATIONS: Metro=MS01-MS20, Rail=NR01-NR10
 USER: {current_user_email or "not logged in"}
+Use relational tools for schedules, availability, fares, seats, bookings, payments, and policies.
+Use graph tools only for route/path/interchange/disruption questions.
 get_user_bookings: call when logged-in user asks about their bookings, tickets, or travel history.
 get_user_profile: call when logged-in user asks about their account or profile.
 get_payment_info: call with booking_id when user asks about payment for a specific booking.
-make_booking/cancel_booking: only if user is logged in AND has explicitly confirmed.
+Booking requests before confirmation: do not call make_booking; call booking_preflight.
+make_booking: only if user is logged in AND the latest user message explicitly confirms the booking.
+cancel_booking: only if user is logged in and the user asks to cancel.
 Route/path/journey/怎麼去/如何前往/路線 questions: use find_route.
+Metro fare/price/cost/票價/多少錢 between two MS stations: use get_metro_fare.
+National rail fare/price/cost/票價/多少錢 between two NR stations: use get_national_rail_journey_fares.
+National rail fare/price/cost for a schedule id like NR_SCH04: use get_national_rail_schedule_fares.
+Schedule/timetable/班次/時刻表 between two stations: use check_metro_availability or check_national_rail_availability.
+Direct neighbours/adjacent stations/相鄰/直接連到: use get_station_connections.
+Avoid/避開 route questions: use find_alternative_routes.
+Delay/延誤/affected stations/hops: use get_delay_ripple.
 Policy/rules/退款/補償/行李/寵物 questions: use search_policy.
 Never use "" as a param value. Omit optional params if unknown.
 
@@ -675,10 +1081,13 @@ JSON:"""
                     "My account/profile/我的帳號 -> get_user_profile. "
                     "Payment info for booking -> get_payment_info. "
                     "Fare/price/cost for a rail schedule id like NR_SCH04 -> get_national_rail_schedule_fares. "
-                    "Book a ticket -> check availability first, then make_booking only after confirmation. "
+                    "Book a ticket before confirmation -> booking_preflight, not make_booking. "
+                    "Only explicit confirmation -> make_booking. "
                     "Cancel a booking -> cancel_booking. "
                     "Policy/rules/refund/luggage/bicycle/退款/補償/行李/寵物 -> search_policy. "
                     "Route/directions/fastest/how-to-get/怎麼去/路線 -> find_route. "
+                    "Adjacent/direct station connections/相鄰/直接連到 -> get_station_connections. "
+                    "Delay/延誤/hops -> get_delay_ripple. "
                     "Metro fare/price/cost/票價/多少錢 -> get_metro_fare. "
                     "Schedule/timetable/trains/services/班次/時刻表 -> availability tools. "
                     "Only call a tool when needed."
@@ -688,27 +1097,58 @@ JSON:"""
             tool_calls = []
             if debug:
                 debug_info.append(f"**Tool selection unavailable:** {exc}")
-        if debug:
-            debug_info.append(f"**Tool selection (native):** {tool_calls}")
+        raw_tool_selection = tool_calls
     else:
-        selection_response = llm.chat(
-            messages=[{"role": "user", "content": tool_selection_prompt}],
-            system_prompt="JSON only. You are a router. Output valid JSON. No empty string param values.",
-        )
-        tool_calls = _parse_tool_calls(selection_response) or []
-        if debug:
-            debug_info.append(f"**Tool selection:** {selection_response}")
+        selection_response = ""
+        try:
+            selection_response = llm.chat(
+                messages=[{"role": "user", "content": tool_selection_prompt}],
+                system_prompt="JSON only. You are a router. Output valid JSON. No empty string param values.",
+            )
+            tool_calls = _parse_tool_calls(selection_response) or []
+        except Exception as exc:
+            tool_calls = []
+            if debug:
+                debug_info.append(f"**Tool selection unavailable:** {exc}")
+        raw_tool_selection = selection_response
 
     lower = augmented_message.lower()
-    station_ids = re.findall(r"\b(MS\d{2}|NR\d{2})\b", augmented_message, re.IGNORECASE)
-    schedule_ids = re.findall(r"\b(NR_SCH\d{2}|MS_SCH\d{2})\b", augmented_message, re.IGNORECASE)
+    station_ids = _unique_preserve_order(
+        re.findall(r"(MS\d{2}|NR\d{2})", augmented_message, re.IGNORECASE)
+    )
+    schedule_ids = _unique_preserve_order(
+        re.findall(r"(NR_SCH\d{2}|MS_SCH\d{2})", augmented_message, re.IGNORECASE)
+    )
+    booking_ids = re.findall(r"((?:BK|MT)[A-Z0-9-]*\d+[A-Z0-9-]*)", augmented_message, re.IGNORECASE)
     two_stations = len(station_ids) >= 2
+    stops_match = re.search(r"\b(\d+)\s*(?:stops?|站)\b", lower)
+    stops_travelled = int(stops_match.group(1)) if stops_match else None
+    fare_class = None
+    if "first" in lower or "頭等" in lower:
+        fare_class = "first"
+    elif "standard" in lower or "標準" in lower:
+        fare_class = "standard"
+
+    # Safety rule: booking requests are read-only until the latest user message
+    # confirms. If Gemini jumps to make_booking too early, rewrite it to
+    # booking_preflight before any tool can execute.
+    confirmed_now, confirmation_source = _booking_confirmed(user_message, history)
+    if debug and confirmed_now:
+        debug_info.append(f"**Booking confirmation:** {confirmation_source}")
+    original_tool_calls = tool_calls
+    tool_calls = _redirect_unconfirmed_booking_calls(tool_calls, confirmed_now)
+    if debug:
+        if tool_calls != original_tool_calls:
+            debug_info.append(f"**Raw tool selection:** {raw_tool_selection}")
+            debug_info.append(f"**Tool selection:** {tool_calls}")
+        elif raw_tool_selection:
+            debug_info.append(f"**Tool selection:** {raw_tool_selection}")
 
     def _tool_selected(name: str, *required_params) -> bool:
         call = next((c for c in tool_calls if c.get("name") == name), None)
         if not call:
             return False
-        params = call.get("params") or {}
+        params = call.get("params") or call.get("parameters") or {}
         return all(params.get(k) for k in required_params)
 
     def _fallback(name: str, params: dict, reason: str) -> None:
@@ -717,6 +1157,8 @@ JSON:"""
         if debug:
             debug_info.append(f"**Fallback:** {reason} -> {name}({params})")
 
+    # Rule-based fallbacks cover the fixed demo questions and short Chinese
+    # prompts where even Gemini may choose an overly broad or write-oriented tool.
     route_triggers = {
         "fastest route",
         "quickest route",
@@ -735,6 +1177,7 @@ JSON:"""
         "最短路線",
         "最便宜路線",
         "最便宜",
+        "最快",
         "怎麼去",
         "如何前往",
         "路線規劃",
@@ -743,6 +1186,11 @@ JSON:"""
         "如何去",
         "如何搭",
         "怎麼搭",
+        "搭到",
+        "轉乘",
+        "換乘",
+        "怎麼轉",
+        "如何轉乘",
     }
     fare_triggers = {
         "fare",
@@ -754,10 +1202,69 @@ JSON:"""
         "價格",
         "費用",
     }
+    date_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", lower)
+    travel_date = date_match.group(0) if date_match else None
+
+    # Booking/payment/cancellation references are deterministic enough to route
+    # with regex, so prefer direct routing over another LLM guess.
+    if booking_ids and not tool_calls:
+        booking_id = booking_ids[0].upper()
+        if any(kw in lower for kw in ["cancel", "取消"]):
+            _fallback("cancel_booking", {"booking_id": booking_id}, "cancel booking query")
+        elif any(kw in lower for kw in ["payment", "付款", "付款方式", "金額"]):
+            _fallback("get_payment_info", {"booking_id": booking_id}, "payment info query")
+
+    if not tool_calls and any(kw in lower for kw in ["cancel", "取消"]):
+        previous_ids = re.findall(
+            r"((?:BK|MT)[A-Z0-9-]*\d+[A-Z0-9-]*)",
+            _history_text(history),
+            re.IGNORECASE,
+        )
+        if previous_ids:
+            _fallback(
+                "cancel_booking",
+                {"booking_id": previous_ids[-1].upper()},
+                "cancel previous booking query",
+            )
+
+    if schedule_ids and not tool_calls:
+        schedule_id = schedule_ids[0].upper()
+        if any(kw in lower for kw in ["seat", "seats", "座位"]):
+            if travel_date and fare_class:
+                _fallback(
+                    "get_available_seats",
+                    {
+                        "schedule_id": schedule_id,
+                        "travel_date": travel_date,
+                        "fare_class": fare_class,
+                    },
+                    "available seats query",
+                )
+        elif schedule_id.startswith("NR_SCH") and stops_travelled and fare_class:
+            _fallback(
+                "get_national_rail_fare",
+                {
+                    "schedule_id": schedule_id,
+                    "fare_class": fare_class,
+                    "stops_travelled": stops_travelled,
+                },
+                "national rail fare with stops query",
+            )
+        elif schedule_id.startswith("MS_SCH") and stops_travelled:
+            _fallback(
+                "calculate_metro_fare",
+                {
+                    "schedule_id": schedule_id,
+                    "stops_travelled": stops_travelled,
+                },
+                "metro fare with stops query",
+            )
+
     if (
         schedule_ids
         and any(kw in lower for kw in fare_triggers)
         and not _tool_selected("get_national_rail_schedule_fares", "schedule_id")
+        and not tool_calls
     ):
         schedule_id = schedule_ids[0].upper()
         if schedule_id.startswith("NR_SCH"):
@@ -767,12 +1274,104 @@ JSON:"""
                 "national rail schedule fare query",
             )
 
+    if not tool_calls and len(station_ids) >= 3 and any(
+        kw in lower for kw in ["avoid", "避開", "alternative"]
+    ):
+        _fallback(
+            "find_alternative_routes",
+            {
+                "origin_id": station_ids[0].upper(),
+                "destination_id": station_ids[1].upper(),
+                "avoid_station_id": station_ids[2].upper(),
+                "network": "auto",
+            },
+            "alternative route query",
+        )
+
+    if not tool_calls and station_ids and any(
+        kw in lower for kw in ["delay", "delayed", "延誤", "影響", "hops", "hop"]
+    ):
+        hops_match = re.search(r"\b(\d+)\s*hops?\b", lower)
+        if not hops_match:
+            hops_match = re.search(r"(\d+)\s*hops?", lower)
+        hops = int(hops_match.group(1)) if hops_match else 2
+        _fallback(
+            "get_delay_ripple",
+            {"station_id": station_ids[0].upper(), "hops": hops},
+            "delay ripple query",
+        )
+
+    if not tool_calls and station_ids and any(
+        kw in lower for kw in ["相鄰", "直接連", "直接相鄰", "direct", "adjacent", "connections"]
+    ):
+        _fallback(
+            "get_station_connections",
+            {"station_id": station_ids[0].upper()},
+            "station connections query",
+        )
+
+    if not tool_calls and any(kw in lower for kw in ["我想訂", "我要訂", "訂票", "book", "booking"]):
+        booking_params = _extract_booking_params(augmented_message)
+        if booking_params:
+            tool_calls = [{"name": "booking_preflight", "params": booking_params}]
+            if debug:
+                debug_info.append(f"**Fallback:** booking request -> booking_preflight({booking_params})")
+
+    if (
+        not tool_calls
+        and
+        two_stations
+        and any(kw in lower for kw in fare_triggers)
+        and not any(
+            _tool_selected(name, "origin_id", "destination_id")
+            for name in ("get_metro_fare", "get_national_rail_journey_fares", "find_route")
+        )
+    ):
+        origin_id = station_ids[0].upper()
+        destination_id = station_ids[1].upper()
+        same_metro = origin_id.startswith("MS") and destination_id.startswith("MS")
+        same_rail = origin_id.startswith("NR") and destination_id.startswith("NR")
+        if same_metro:
+            _fallback(
+                "get_metro_fare",
+                {"origin_id": origin_id, "destination_id": destination_id},
+                "metro station fare query",
+            )
+        elif same_rail:
+            params = {"origin_id": origin_id, "destination_id": destination_id}
+            if travel_date:
+                params["travel_date"] = travel_date
+            if "first" in lower or "頭等" in lower or "first class" in lower:
+                params["fare_class"] = "first"
+            elif "standard" in lower or "標準" in lower:
+                params["fare_class"] = "standard"
+            _fallback(
+                "get_national_rail_journey_fares",
+                params,
+                "national rail station fare query",
+            )
+        else:
+            _fallback(
+                "find_route",
+                {
+                    "origin_id": origin_id,
+                    "destination_id": destination_id,
+                    "optimise_by": "cost",
+                },
+                "cross-network fare query",
+            )
+
     is_route = (
         any(kw in lower for kw in route_triggers)
         or (two_stations and "route" in lower)
         or (two_stations and "路線" in lower)
     )
-    if is_route and two_stations and not _tool_selected("find_route", "origin_id", "destination_id"):
+    if (
+        not tool_calls
+        and is_route
+        and two_stations
+        and not _tool_selected("find_route", "origin_id", "destination_id")
+    ):
         optimise_by = "cost" if any(
             kw in lower for kw in ["cheap", "cheapest", "lowest cost", "最便宜", "最低票價"]
         ) else "time"
@@ -801,6 +1400,7 @@ JSON:"""
             "班次",
             "時刻表",
             "列車",
+            "服務",
             "有沒有車",
             "幾點有車",
             "查車",
@@ -808,10 +1408,6 @@ JSON:"""
         if any(kw in lower for kw in availability_triggers):
             origin_id = station_ids[0].upper()
             destination_id = station_ids[1].upper()
-            travel_date = next(
-                (w for w in lower.split() if re.match(r"\d{4}-\d{2}-\d{2}", w)),
-                None,
-            )
             params = {"origin_id": origin_id, "destination_id": destination_id}
             if travel_date:
                 params["travel_date"] = travel_date
@@ -876,16 +1472,80 @@ JSON:"""
         if any(kw in lower for kw in policy_triggers):
             _fallback("search_policy", {"query": user_message}, "policy query")
 
-    if any(c.get("name") == "make_booking" for c in tool_calls):
-        if not _user_confirmed(history + [{"role": "user", "content": user_message}]):
-            tool_calls = []
+    if not tool_calls and confirmed_now:
+        # On "confirm" turns, recover the pending booking details from recent
+        # conversation text so make_booking can run with concrete parameters.
+        recovered = _extract_booking_params(_history_text(history) + "\n" + augmented_message)
+        if recovered:
+            tool_calls = [{"name": "make_booking", "params": recovered}]
             if debug:
-                debug_info.append("**Booking gate:** make_booking blocked; no confirmation detected.")
+                debug_info.append(f"**Fallback:** booking confirmation -> make_booking({recovered})")
 
     tool_results = []
+    if any(c.get("name") in {"make_booking", "booking_preflight"} for c in tool_calls):
+        if not confirmed_now:
+            # Unconfirmed booking intent becomes a read-only preflight sequence:
+            # availability -> fare -> seats.
+            preflight_results = []
+            for call in tool_calls:
+                if call.get("name") not in {"make_booking", "booking_preflight"}:
+                    continue
+                preflight_results.extend(_booking_preflight_results(
+                    call.get("params") or call.get("parameters", {}),
+                    current_user_email,
+                ))
+
+            tool_calls = []
+            tool_results.extend(preflight_results)
+            if debug:
+                debug_info.append(
+                    "**Effective tools:** check_national_rail_availability -> "
+                    "get_national_rail_fare -> get_available_seats"
+                )
+                debug_info.append(
+                    "**Booking preflight:** ran availability, fare, and seat checks before confirmation."
+                )
+        else:
+            gated_calls = []
+            for call in tool_calls:
+                if call.get("name") != "make_booking":
+                    gated_calls.append(call)
+                    continue
+                booking_params = _normalise_tool_params(
+                    "make_booking",
+                    call.get("params") or call.get("parameters", {}),
+                )
+                missing = [
+                    label
+                    for label, value in (
+                        ("schedule_id", booking_params.get("schedule_id")),
+                        ("origin_station_id", booking_params.get("origin_station_id")),
+                        ("destination_station_id", booking_params.get("destination_station_id")),
+                        ("travel_date", booking_params.get("travel_date")),
+                        ("fare_class", booking_params.get("fare_class")),
+                        ("seat_id", booking_params.get("seat_id")),
+                    )
+                    if not value
+                ]
+                if missing:
+                    result_json = json.dumps({
+                        "error": (
+                            "完成訂票前需要先補齊資料："
+                            + ", ".join(missing)
+                            + "。請提供完整訂票資訊。"
+                        )
+                    })
+                    tool_results.append(_tool_result("make_booking", booking_params, result_json))
+                    continue
+                gated_calls.append({"name": "make_booking", "params": booking_params})
+            tool_calls = gated_calls
+
     for call in tool_calls:
         tool_name = call.get("name", "")
-        params = call.get("params") or call.get("parameters", {})
+        params = _normalise_tool_params(
+            tool_name,
+            call.get("params") or call.get("parameters", {}),
+        )
 
         if any(v == "" for v in params.values()):
             if debug:
@@ -904,14 +1564,7 @@ JSON:"""
                 f"**Summary sent to LLM:** {summary}"
             )
 
-        tool_results.append(
-            {
-                "tool": tool_name,
-                "params": params,
-                "result": result_json,
-                "summary": summary,
-            }
-        )
+        tool_results.append(_tool_result(tool_name, params, result_json))
 
     db_keywords = {
         "booking",
@@ -936,6 +1589,9 @@ JSON:"""
     }
     data_block = ""
     if tool_results:
+        # The final LLM call only receives database results, not free-form
+        # instructions to invent data. This keeps schedules, fares, seats, and
+        # booking status grounded in PostgreSQL/Neo4j.
         data_block = "\n\n".join(
             f"[{tr['tool']}]\n{_normalise_result(tr['tool'], tr['result'])}"
             for tr in tool_results
@@ -945,7 +1601,11 @@ JSON:"""
         content = (
             f"DATA FROM TRANSITFLOW DATABASE:\n{data_block}"
             f"\n\nUser asks: {user_message}"
-            f"\n\nAnswer using only the data above. Use emojis and clear formatting:"
+            "\n\nAnswer using only the data above. Use emojis and clear formatting."
+            "\nIf the user is trying to book and the data includes availability, fares, or seats, "
+            "do NOT say the booking is complete. Summarise the available service options, "
+            "show the fare and a few available seat IDs, then ask the user to choose/confirm "
+            "the exact schedule and seat before booking:"
         )
     elif any(kw in user_message.lower() for kw in db_keywords):
         content = (
@@ -960,13 +1620,13 @@ JSON:"""
     final_messages = history + [{"role": "user", "content": content}]
     try:
         answer = llm.chat(messages=final_messages, system_prompt=contextual_prompt)
-    except ConnectionError as exc:
+    except Exception as exc:
         if tool_results:
-            answer = f"目前 Ollama 沒有啟動；先直接提供資料庫查詢結果：\n\n{data_block}"
+            answer = f"目前 LLM 回應失敗；先直接提供資料庫查詢結果：\n\n{data_block}"
         else:
             answer = (
-                "目前 Ollama 沒有啟動，所以我無法產生 AI 回覆。"
-                "請啟動 Ollama，或在右側切換到 Gemini 後再試一次。"
+                "目前 LLM 回應失敗，所以我無法產生 AI 回覆。"
+                "請確認目前選用的模型服務可用後再試一次。"
             )
         if debug:
             debug_info.append(f"**LLM unavailable:** {exc}")

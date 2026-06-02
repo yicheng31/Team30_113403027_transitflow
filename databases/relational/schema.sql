@@ -352,14 +352,14 @@ CREATE TABLE IF NOT EXISTS policy_documents (
     title       VARCHAR(200) NOT NULL,
     category    VARCHAR(50)  NOT NULL,  -- 'refund', 'booking', 'conduct'
     content     TEXT         NOT NULL,
-    -- 768-dim  → Ollama nomic-embed-text (default)
+    -- 768-dim  → Ollama nomic-embed-text
     -- 3072-dim → Gemini gemini-embedding-001
-    -- If you switch LLM_PROVIDER to gemini, change to vector(3072) and reset the database.
-    embedding   vector(768),
+    -- If you switch embedding providers, reset this table and reseed vectors.
+    embedding   vector(3072),
     source_file VARCHAR(200),
     created_at  TIMESTAMPTZ  DEFAULT NOW()
 );
 
--- Index for fast cosine similarity search
-CREATE INDEX IF NOT EXISTS idx_policy_documents_embedding
-ON policy_documents USING hnsw (embedding vector_cosine_ops);
+-- For Gemini's 3072-dim embeddings, pgvector cannot build an HNSW index
+-- because HNSW supports up to 2000 dimensions for vector columns.
+-- The policy corpus is small, so sequential cosine search is sufficient.

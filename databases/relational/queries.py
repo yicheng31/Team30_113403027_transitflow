@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import random
 import string
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -57,9 +57,17 @@ def _gen_payment_id() -> str:
     return f"PM-{suffix}"
 
 
-def _gen_user_id() -> str:
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"RU-{suffix}"
+def _gen_user_id(cur) -> str:
+    """Generate the next public user id, keeping the seeded RU01/RU02 style."""
+    cur.execute(
+        """
+        SELECT COALESCE(MAX(SUBSTRING(user_id FROM 3)::int), 0) + 1 AS next_num
+        FROM registered_users
+        WHERE user_id ~ '^RU[0-9]+$'
+        """
+    )
+    next_num = cur.fetchone()[0]
+    return f"RU{next_num:02d}"
 
 
 # ── Example ───────────────────────────────────────────────────────────────────
@@ -444,6 +452,8 @@ def query_user_profile(user_email: str) -> Optional[dict]:
             surname,
             phone,
             date_of_birth,
+            EXTRACT(MONTH FROM date_of_birth)::int AS birth_month,
+            EXTRACT(DAY FROM date_of_birth)::int AS birth_day,
             registered_at,
             is_active
         FROM registered_users
@@ -458,7 +468,11 @@ def query_user_profile(user_email: str) -> Optional[dict]:
 
 def query_user_bookings(user_email: str) -> dict:
     """
-    Return a user's combined booking history (national rail + metro).
+    Return a user's active booking/trip list (national rail + metro).
+
+    Cancelled national rail bookings stay in the database for audit/payment
+    history, but they are hidden from the normal "my bookings" view so users do
+    not see cancelled tickets as active reservations.
 
     Returns:
         dict with keys 'national_rail' (list) and 'metro' (list)
@@ -494,6 +508,7 @@ def query_user_bookings(user_email: str) -> dict:
         JOIN national_rail_seats seat
             ON seat.id = booking.national_rail_seat_pk
         WHERE users.email = %s
+          AND booking.status <> 'cancelled'
         ORDER BY booking.travel_date DESC, booking.departure_time DESC
     """
     metro_sql = """
@@ -917,7 +932,9 @@ def register_user(
     email: str,
     first_name: str,
     surname: str,
-    year_of_birth: int,
+    birth_year: int,
+    birth_month: int,
+    birth_day: int,
     password: str,
     secret_question: str,
     secret_answer: str,
@@ -931,8 +948,10 @@ def register_user(
     conn = psycopg2.connect(PG_DSN)
     conn.autocommit = False
     try:
+        date_of_birth = date(birth_year, birth_month, birth_day)
         with conn.cursor() as cur:
-            user_id = _gen_user_id()
+            cur.execute("LOCK TABLE registered_users IN SHARE ROW EXCLUSIVE MODE")
+            user_id = _gen_user_id(cur)
             cur.execute(
                 """
                 INSERT INTO registered_users (
@@ -952,7 +971,7 @@ def register_user(
                     first_name,
                     surname,
                     email,
-                    f"{year_of_birth}-01-01",
+                    date_of_birth,
                 ),
             )
             user_pk = cur.fetchone()[0]
@@ -988,7 +1007,8 @@ def register_user(
 def login_user(email: str, password: str) -> Optional[dict]:
     """
     Verify credentials. Returns a user dict on success or None on failure.
-    Dict keys: user_id, email, full_name, first_name, surname, phone, date_of_birth, is_active.
+    Dict keys: user_id, email, full_name, first_name, surname, phone,
+    date_of_birth, birth_month, birth_day, is_active.
     """
     sql = """
         SELECT
@@ -999,6 +1019,8 @@ def login_user(email: str, password: str) -> Optional[dict]:
             users.surname,
             users.phone,
             users.date_of_birth,
+            EXTRACT(MONTH FROM users.date_of_birth)::int AS birth_month,
+            EXTRACT(DAY FROM users.date_of_birth)::int AS birth_day,
             users.is_active,
             auth.password_hash
         FROM registered_users users

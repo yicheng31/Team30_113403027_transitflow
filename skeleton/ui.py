@@ -6,6 +6,7 @@ Then open: http://localhost:7860
 """
 
 import sys
+from datetime import date
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -197,6 +198,8 @@ def do_register(
     first_name,
     surname,
     year_of_birth,
+    month_of_birth,
+    day_of_birth,
     password,
     secret_question,
     secret_answer,
@@ -206,6 +209,9 @@ def do_register(
             str(email).strip(),
             str(first_name).strip(),
             str(surname).strip(),
+            str(year_of_birth).strip(),
+            str(month_of_birth).strip(),
+            str(day_of_birth).strip(),
             str(password).strip(),
             secret_question,
             str(secret_answer).strip(),
@@ -223,11 +229,14 @@ def do_register(
 
     try:
         year = int(year_of_birth)
+        month = int(month_of_birth)
+        day = int(day_of_birth)
         if year < 1900 or year > 2015:
             raise ValueError
+        birth_date = date(year, month, day)
     except (ValueError, TypeError):
         return (
-            gr.update(value="請輸入有效的出生年份（例如：1990）。", visible=True),
+            gr.update(value="請輸入有效的出生年月日（例如：1990 / 3 / 14）。", visible=True),
             None,
             gr.update(),
             gr.update(),
@@ -240,7 +249,9 @@ def do_register(
         email.strip(),
         first_name.strip(),
         surname.strip(),
-        year,
+        birth_date.year,
+        birth_date.month,
+        birth_date.day,
         password,
         secret_question,
         secret_answer.strip(),
@@ -370,7 +381,10 @@ with gr.Blocks(title="TransitFlow", theme=gr.themes.Soft()) as demo:
             reg_first_name_in = gr.Textbox(label="名字")
             reg_surname_in = gr.Textbox(label="姓氏")
         reg_email_in = gr.Textbox(label="Email", placeholder="your@email.com")
-        reg_year_in = gr.Textbox(label="出生年份", placeholder="例如：1990")
+        with gr.Row():
+            reg_year_in = gr.Textbox(label="出生年份", placeholder="1990")
+            reg_month_in = gr.Textbox(label="出生月份", placeholder="3")
+            reg_day_in = gr.Textbox(label="出生日期", placeholder="14")
         reg_password_in = gr.Textbox(label="密碼", type="password")
         reg_question_in = gr.Dropdown(choices=SECRET_QUESTIONS, label="安全問題")
         reg_answer_in = gr.Textbox(label="安全問題答案")
@@ -511,6 +525,8 @@ with gr.Blocks(title="TransitFlow", theme=gr.themes.Soft()) as demo:
             reg_first_name_in,
             reg_surname_in,
             reg_year_in,
+            reg_month_in,
+            reg_day_in,
             reg_password_in,
             reg_question_in,
             reg_answer_in,
