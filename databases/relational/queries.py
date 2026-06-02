@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Author: Your name
+# @Date:   2026-05-28 14:29:40
+# @Last Modified by:   Your name
+# @Last Modified time: 2026-05-28 20:19:30
 """
 TransitFlow — PostgreSQL / Relational Database Layer
 =====================================================
@@ -23,9 +28,13 @@ are already implemented — do not modify them.
 from __future__ import annotations
 
 import json
+<<<<<<< HEAD
 import random
 import string
 from datetime import date, datetime, timezone
+=======
+from datetime import datetime, timezone
+>>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
 from decimal import Decimal
 from typing import Optional
 
@@ -40,6 +49,7 @@ from skeleton.config import PG_DSN, VECTOR_TOP_K, VECTOR_SIMILARITY_THRESHOLD
 PASSWORD_HASHER = PasswordHasher()
 
 
+# Shared PostgreSQL connection helper used by read-only query functions.
 def _connect():
     """Return a new psycopg2 connection with autocommit enabled."""
     conn = psycopg2.connect(PG_DSN)
@@ -47,27 +57,74 @@ def _connect():
     return conn
 
 
-def _gen_booking_id() -> str:
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"BK-{suffix}"
+# External display IDs are generated from the current max matching prefix.
+def _gen_prefixed_id(cur, table: str, column: str, prefix: str) -> str:
+    """Create the next sequential external code, such as BK021 or PM041."""
+    # Only count IDs that match the seeded numeric format. Older random IDs like
+    # BK-ABC123 remain valid, but they should not control the next sequence.
+    cur.execute(
+        f"""
+        SELECT COALESCE(MAX(SUBSTRING({column} FROM %s)::INTEGER), 0)
+        FROM {table}
+        WHERE {column} ~ %s
+        """,
+        (len(prefix) + 1, f"^{prefix}[0-9]+$"),
+    )
+    next_number = cur.fetchone()[0] + 1
+    return f"{prefix}{next_number:03d}"
 
 
-def _gen_payment_id() -> str:
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"PM-{suffix}"
+# External booking IDs stay separate from internal numeric primary keys.
+def _gen_booking_id(cur) -> str:
+    """Create a short external booking code for new national rail bookings."""
+    return _gen_prefixed_id(cur, "national_rail_bookings", "booking_id", "BK")
 
 
+<<<<<<< HEAD
 def _gen_user_id(cur) -> str:
     """Generate the next public user id, keeping the seeded RU01/RU02 style."""
     cur.execute(
         """
         SELECT COALESCE(MAX(SUBSTRING(user_id FROM 3)::int), 0) + 1 AS next_num
+=======
+# External payment IDs are short display references for inserted payments.
+def _gen_payment_id(cur) -> str:
+    """Create a short external payment code for newly inserted payments."""
+    return _gen_prefixed_id(cur, "payments", "payment_id", "PM")
+
+
+# External metro trip IDs follow the seeded MT001, MT002, ... sequence.
+def _gen_trip_id(cur) -> str:
+    """Create a short external trip code for newly inserted metro trips."""
+    return _gen_prefixed_id(cur, "metro_trips", "trip_id", "MT")
+
+
+# External feedback IDs follow the seeded FB001, FB002, ... sequence.
+def _gen_feedback_id(cur) -> str:
+    """Create a short external feedback code for newly inserted feedback."""
+    return _gen_prefixed_id(cur, "feedback", "feedback_id", "FB")
+
+
+# New users should continue the seeded RU01, RU02, ... display sequence.
+def _gen_user_id(cur) -> str:
+    """Create the next sequential external user code, such as RU21."""
+    # Existing seed users use RU01..RU20, so new accounts should continue that
+    # visible sequence instead of using random IDs like RU-ABC123.
+    cur.execute(
+        """
+        SELECT COALESCE(MAX(SUBSTRING(user_id FROM 3)::INTEGER), 0)
+>>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
         FROM registered_users
         WHERE user_id ~ '^RU[0-9]+$'
         """
     )
+<<<<<<< HEAD
     next_num = cur.fetchone()[0]
     return f"RU{next_num:02d}"
+=======
+    next_number = cur.fetchone()[0] + 1
+    return f"RU{next_number:02d}"
+>>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
 
 
 # ── Example ───────────────────────────────────────────────────────────────────
@@ -75,6 +132,23 @@ def _gen_user_id(cur) -> str:
 # Use _connect() for read-only queries; for write operations use a manual
 # connection with conn.commit() / conn.rollback() (see execute_booking below).
 
+# Normalise count-like tool parameters before using them in fare math.
+def _positive_int_or_none(value) -> Optional[int]:
+    """Convert a value to a positive integer, or return None for invalid input."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+# Keep email comparisons consistent across login, booking, and payment lookups.
+def _normalise_email(email: str) -> str:
+    """Apply the shared email format used for lookup and uniqueness checks."""
+    return (email or "").strip().lower()
+
+
+# Tiny connectivity smoke test for PostgreSQL.
 def example_query() -> dict:
     """Example: returns the name of the connected database."""
     with _connect() as conn:
@@ -88,6 +162,7 @@ def example_query() -> dict:
 
 # ── NATIONAL RAIL AVAILABILITY ────────────────────────────────────────────────
 
+# List rail services that can carry a passenger between two stations.
 def query_national_rail_availability(
     origin_id: str,
     destination_id: str,
@@ -162,6 +237,7 @@ def query_national_rail_availability(
             return [dict(row) for row in cur.fetchall()]
 
 
+# Compute one rail fare class once the route stop count is known.
 def query_national_rail_fare(
     schedule_id: str,
     fare_class: str,
@@ -178,7 +254,8 @@ def query_national_rail_fare(
     Returns:
         dict with fare_class, base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
-    if stops_travelled <= 0:
+    stops_travelled = _positive_int_or_none(stops_travelled)
+    if stops_travelled is None:
         return None
 
     sql = """
@@ -200,6 +277,7 @@ def query_national_rail_fare(
             return dict(row) if row else None
 
 
+# Return every fare class for a schedule-wide rail fare question.
 def query_national_rail_schedule_fares(schedule_id: str) -> list[dict]:
     """
     Return all fare classes for a national rail schedule using the full route.
@@ -264,6 +342,7 @@ def query_national_rail_schedule_fares(schedule_id: str) -> list[dict]:
 
 # ── METRO SCHEDULES & FARE ────────────────────────────────────────────────────
 
+# List direct metro schedules whose stop order matches the requested trip.
 def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
     """
     Return metro schedules that serve both origin and destination in the correct order.
@@ -311,6 +390,7 @@ def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
             return [dict(row) for row in cur.fetchall()]
 
 
+# Compute metro fare for a direct schedule and stop count.
 def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
     """
     Calculate the metro fare for a single-ticket journey.
@@ -322,7 +402,8 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
     Returns:
         dict with base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
-    if stops_travelled <= 0:
+    stops_travelled = _positive_int_or_none(stops_travelled)
+    if stops_travelled is None:
         return None
 
     sql = """
@@ -340,6 +421,7 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
             return dict(row) if row else None
 
 
+# Estimate a metro fare when route planning comes from graph traversal.
 def query_metro_fare_estimate(stops_travelled: int) -> Optional[dict]:
     """
     Estimate a metro fare using the configured PostgreSQL metro fare rule.
@@ -347,7 +429,8 @@ def query_metro_fare_estimate(stops_travelled: int) -> Optional[dict]:
     This is used when route planning comes from Neo4j and there is no single
     direct metro schedule covering the full journey.
     """
-    if stops_travelled <= 0:
+    stops_travelled = _positive_int_or_none(stops_travelled)
+    if stops_travelled is None:
         return None
 
     sql = """
@@ -369,6 +452,7 @@ def query_metro_fare_estimate(stops_travelled: int) -> Optional[dict]:
 
 # ── SEAT SELECTION ────────────────────────────────────────────────────────────
 
+# Show seats that are not already held by active bookings on the travel date.
 def query_available_seats(
     schedule_id: str,
     travel_date: str,
@@ -412,6 +496,7 @@ def query_available_seats(
             return [dict(row) for row in cur.fetchall()]
 
 
+# Pick nearby seats for multi-passenger booking requests.
 def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[str]:
     """
     Select `count` seats that are as close together as possible (same row preferred,
@@ -441,8 +526,10 @@ def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[
 
 # ── USER & BOOKING QUERIES ────────────────────────────────────────────────────
 
+# Fetch the logged-in customer's public profile fields.
 def query_user_profile(user_email: str) -> Optional[dict]:
     """Return a user's profile by email."""
+    user_email = _normalise_email(user_email)
     sql = """
         SELECT
             user_id,
@@ -458,6 +545,7 @@ def query_user_profile(user_email: str) -> Optional[dict]:
             is_active
         FROM registered_users
         WHERE email = %s
+          AND is_active = TRUE
     """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -466,17 +554,24 @@ def query_user_profile(user_email: str) -> Optional[dict]:
             return dict(row) if row else None
 
 
+# Combine rail bookings and metro trips for "show my bookings" requests.
 def query_user_bookings(user_email: str) -> dict:
+<<<<<<< HEAD
     """
     Return a user's active booking/trip list (national rail + metro).
 
     Cancelled national rail bookings stay in the database for audit/payment
     history, but they are hidden from the normal "my bookings" view so users do
     not see cancelled tickets as active reservations.
+=======
+    """     
+    Return a user's combined booking history (national rail + metro).
+>>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
 
     Returns:
         dict with keys 'national_rail' (list) and 'metro' (list)
     """
+    user_email = _normalise_email(user_email)
     rail_sql = """
         SELECT
             booking.booking_id,
@@ -492,6 +587,7 @@ def query_user_bookings(user_email: str) -> dict:
             seat.coach,
             seat.seat_id,
             booking.stops_travelled,
+            booking.fare_usd,
             booking.amount_usd,
             booking.status,
             booking.booked_at,
@@ -508,7 +604,11 @@ def query_user_bookings(user_email: str) -> dict:
         JOIN national_rail_seats seat
             ON seat.id = booking.national_rail_seat_pk
         WHERE users.email = %s
+<<<<<<< HEAD
           AND booking.status <> 'cancelled'
+=======
+          AND users.is_active = TRUE
+>>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
         ORDER BY booking.travel_date DESC, booking.departure_time DESC
     """
     metro_sql = """
@@ -523,6 +623,7 @@ def query_user_bookings(user_email: str) -> dict:
             trip.ticket_type,
             trip.day_pass_ref,
             trip.stops_travelled,
+            trip.fare_usd,
             trip.amount_usd,
             trip.status,
             trip.purchased_at,
@@ -537,6 +638,7 @@ def query_user_bookings(user_email: str) -> dict:
         JOIN metro_stations destination
             ON destination.id = trip.destination_station_pk
         WHERE users.email = %s
+          AND users.is_active = TRUE
         ORDER BY trip.travel_date DESC, trip.purchased_at DESC
     """
     with _connect() as conn:
@@ -548,8 +650,10 @@ def query_user_bookings(user_email: str) -> dict:
             return {"national_rail": national_rail, "metro": metro}
 
 
+# Find payment details for either a rail booking id or a metro trip id.
 def query_payment_info(booking_id: str, user_email: str) -> Optional[dict]:
     """Return payment record for a booking or metro trip owned by the user."""
+    user_email = _normalise_email(user_email)
     sql = """
         SELECT
             payment.payment_id,
@@ -593,6 +697,7 @@ def query_payment_info(booking_id: str, user_email: str) -> Optional[dict]:
 
 # ── TRANSACTIONAL OPERATIONS ──────────────────────────────────────────────────
 
+# Create the booking and its payment together so they commit or roll back as one.
 def execute_booking(
     user_id: str,
     schedule_id: str,
@@ -620,6 +725,12 @@ def execute_booking(
         (True, booking_dict)   on success
         (False, error_message) on failure
     """
+    seat_id = (seat_id or "any").strip()
+    if seat_id.lower() == "any":
+        seat_id = "any"
+    else:
+        seat_id = seat_id.upper()
+
     conn = psycopg2.connect(PG_DSN)
     conn.autocommit = False
     try:
@@ -723,8 +834,8 @@ def execute_booking(
                 conn.rollback()
                 return False, "No seats available for this schedule/date/fare class"
 
-            booking_id = _gen_booking_id()
-            payment_id = _gen_payment_id()
+            booking_id = _gen_booking_id(cur)
+            payment_id = _gen_payment_id(cur)
             cur.execute(
                 """
                 INSERT INTO national_rail_bookings (
@@ -739,11 +850,12 @@ def execute_booking(
                     ticket_type,
                     fare_class,
                     stops_travelled,
+                    fare_usd,
                     amount_usd,
                     status,
                     booked_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'confirmed', NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'confirmed', NOW())
                 RETURNING id, booking_id, booked_at
                 """,
                 (
@@ -758,6 +870,7 @@ def execute_booking(
                     ticket_type,
                     fare_class,
                     route["stops_travelled"],
+                    fare["total_fare_usd"],
                     fare["total_fare_usd"],
                 ),
             )
@@ -793,6 +906,7 @@ def execute_booking(
                 "seat_id": seat["seat_id"],
                 "coach": seat["coach"],
                 "stops_travelled": route["stops_travelled"],
+                "fare_usd": fare["total_fare_usd"],
                 "amount_usd": fare["total_fare_usd"],
                 "status": "confirmed",
                 "booked_at": booking["booked_at"],
@@ -808,6 +922,7 @@ def execute_booking(
         conn.close()
 
 
+# Cancel a booking and update refund status in the same transaction.
 def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | str]:
     """
     Cancel a national rail booking owned by the given user.
@@ -833,6 +948,7 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
                 SELECT
                     booking.id AS booking_pk,
                     booking.booking_id,
+                    booking.fare_usd,
                     booking.amount_usd,
                     booking.status,
                     booking.travel_date,
@@ -866,7 +982,7 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
                 tzinfo=timezone.utc,
             )
             hours_before = (scheduled_at - datetime.now(timezone.utc)).total_seconds() / 3600
-            amount = booking["amount_usd"]
+            amount = booking["fare_usd"]
             if not isinstance(amount, Decimal):
                 amount = Decimal(str(amount))
 
@@ -895,7 +1011,8 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
             cur.execute(
                 """
                 UPDATE national_rail_bookings
-                SET status = 'cancelled'
+                SET status = 'cancelled',
+                    cancelled_at = COALESCE(cancelled_at, NOW())
                 WHERE id = %s
                 """,
                 (booking["booking_pk"],),
@@ -928,6 +1045,42 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
 
 # ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────
 
+# Soft-delete accounts without removing historical travel records.
+def execute_deactivate_user(user_id: str) -> bool:
+    """Soft delete a user account while keeping bookings, payments, and feedback history."""
+    sql = """
+        UPDATE registered_users
+        SET is_active = FALSE,
+            deactivated_at = COALESCE(deactivated_at, NOW())
+        WHERE user_id = %s
+          AND is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (user_id,))
+            return cur.rowcount > 0
+
+
+# Cancel a metro trip owned by a user without deleting the row.
+def execute_cancel_metro_trip(trip_id: str, user_id: str) -> bool:
+    """Soft delete/cancel a metro trip record owned by a user."""
+    sql = """
+        UPDATE metro_trips trip
+        SET status = 'cancelled',
+            cancelled_at = COALESCE(cancelled_at, NOW())
+        FROM registered_users users
+        WHERE users.id = trip.user_pk
+          AND trip.trip_id = %s
+          AND users.user_id = %s
+          AND trip.status <> 'cancelled'
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (trip_id, user_id))
+            return cur.rowcount > 0
+
+
+# Register a customer profile and matching auth row in one transaction.
 def register_user(
     email: str,
     first_name: str,
@@ -945,12 +1098,16 @@ def register_user(
 
     Passwords are stored as Argon2id hashes.
     """
+    email = _normalise_email(email)
     conn = psycopg2.connect(PG_DSN)
     conn.autocommit = False
     try:
         date_of_birth = date(birth_year, birth_month, birth_day)
         with conn.cursor() as cur:
+<<<<<<< HEAD
             cur.execute("LOCK TABLE registered_users IN SHARE ROW EXCLUSIVE MODE")
+=======
+>>>>>>> 4836b765bf1e177ac0fef698aec75593eac5dcd5
             user_id = _gen_user_id(cur)
             cur.execute(
                 """
@@ -1004,12 +1161,14 @@ def register_user(
         conn.close()
 
 
+# Verify Argon2 password hash and return non-sensitive user fields.
 def login_user(email: str, password: str) -> Optional[dict]:
     """
     Verify credentials. Returns a user dict on success or None on failure.
     Dict keys: user_id, email, full_name, first_name, surname, phone,
     date_of_birth, birth_month, birth_day, is_active.
     """
+    email = _normalise_email(email)
     sql = """
         SELECT
             users.user_id,
@@ -1044,8 +1203,10 @@ def login_user(email: str, password: str) -> Optional[dict]:
             return result
 
 
+# Retrieve the account recovery question for an active email.
 def get_user_secret_question(email: str) -> Optional[str]:
     """Return the secret question for a registered email, or None if not found."""
+    email = _normalise_email(email)
     sql = """
         SELECT auth.secret_question
         FROM registered_users users
@@ -1061,8 +1222,10 @@ def get_user_secret_question(email: str) -> Optional[str]:
             return row[0] if row else None
 
 
+# Check the stored recovery answer for password-reset flow.
 def verify_secret_answer(email: str, answer: str) -> bool:
     """Return True if the provided answer matches the stored secret answer (case-insensitive)."""
+    email = _normalise_email(email)
     sql = """
         SELECT auth.secret_answer
         FROM registered_users users
@@ -1080,8 +1243,10 @@ def verify_secret_answer(email: str, answer: str) -> bool:
             return row[0].strip().lower() == answer.strip().lower()
 
 
+# Replace a user's password hash after successful recovery.
 def update_password(email: str, new_password: str) -> bool:
     """Update the password for a user. Returns True if the row was updated."""
+    email = _normalise_email(email)
     sql = """
         UPDATE user_auth_credentials auth
         SET password_hash = %s
@@ -1098,6 +1263,7 @@ def update_password(email: str, new_password: str) -> bool:
 
 # ── VECTOR / RAG QUERIES — do not modify ─────────────────────────────────────
 
+# Search embedded policy/rule documents for help-desk style questions.
 def query_policy_vector_search(embedding: list[float], top_k: int = VECTOR_TOP_K) -> list[dict]:
     """
     Find the most relevant policy documents for a given query embedding.
@@ -1127,6 +1293,7 @@ def query_policy_vector_search(embedding: list[float], top_k: int = VECTOR_TOP_K
             return [dict(row) for row in cur.fetchall()]
 
 
+# Store one embedded policy document during vector seeding.
 def store_policy_document(
     title: str,
     category: str,
