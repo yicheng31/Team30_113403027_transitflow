@@ -8,9 +8,9 @@ This report is based on visible commit history, merged pull requests, and change
 
 |Full Name|Student ID|GitHub Username |Email                   |
 |---------|----------|----------------|------------------------|
-|Yicheng  |113403027 |`yicheng31`     |`howie3429@gmail.com`   |
-|Fongyi   |113403020 |`floyd941211`   |`floyd941211@gmail.com` |
-|Yuhao    |113403029 |`lai-yu-hao1026`|`laiyuhao1586@gmail.com`|
+|林益誠  |113403027 |`yicheng31`     |`howie3429@gmail.com`   |
+|曾丰翊   |113403020 |`floyd941211`   |`floyd941211@gmail.com` |
+|賴昱豪    |113403029 |`lai-yu-hao1026`|`laiyuhao1586@gmail.com`|
 
 ## 2. Commit / PR Evidence Summary
 
@@ -53,8 +53,8 @@ This report is based on visible commit history, merged pull requests, and change
 
 |Member   |Estimated %|Brief justification                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 |---------|----------:|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|Yicheng  |43%        |Largest visible commit count and broadest scope: project setup, relational schema, relational queries, PostgreSQL seeding, fare/availability fixes, Codespaces and UI/agent integration fixes.                                                                                                                                                                                                                                                                            |
-|Fongyi   |32%        |Owned the graph database layer: Neo4j seed, graph route functions, route refactors, delay ripple, route return shape, and interchange improvements through several commits and PRs.                                                                                                                                                                                                                                                                                       |
+|Yicheng  |40%        |Largest visible commit count and broadest scope: project setup, relational schema, relational queries, PostgreSQL seeding, fare/availability fixes, Codespaces and UI/agent integration fixes.                                                                                                                                                                                                                                                                            |
+|Fongyi   |35%        |Owned the graph database layer: Neo4j seed, graph route functions, route refactors, delay ripple, route return shape, and interchange improvements through several commits and PRs.                                                                                                                                                                                                                                                                                       |
 |Yuhao    |25%        |Redesigned the agent tool-routing architecture (pre-classification system replacing LLM-dependent selection), implemented automatic multi-step booking chain and cross-conversation context recovery, resolved 7 documented bugs across the agent pipeline, delivered 24 optimizations documented in TASK6.md, and exposed four database query functions as new agent tools. The agent layer directly interfaces all three database systems (PostgreSQL, pgvector, Neo4j).|
 |**Total**|**100%**   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
