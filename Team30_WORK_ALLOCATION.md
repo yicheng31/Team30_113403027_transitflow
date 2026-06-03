@@ -73,6 +73,6 @@ We confirm that this work allocation reflects the visible commit history and the
 
 | Name | Signature / Typed name | Date |
 |---|---|---|
-| Yicheng | TODO | TODO |
+| Yicheng | 林益誠 | 2026/6/3 12:14 |
 | Fongyi | TODO | TODO |
 | Yuhao | TODO | TODO |
