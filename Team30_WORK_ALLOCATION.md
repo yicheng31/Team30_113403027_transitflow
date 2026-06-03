@@ -74,10 +74,5 @@ We confirm that this work allocation reflects the visible commit history and the
 | Name | Signature / Typed name | Date |
 |---|---|---|
 | Yicheng | 林益誠 | 2026/6/3 12:14 |
-<<<<<<< HEAD
 | Fongyi | 曾丰翊 | 2026/6/3 12:20 |
 | Yuhao | TODO | TODO |
-=======
-| Fongyi | Fongyi | 2026/6/3 |
-| Yuhao | Yuhao | 2026/6/3 |
->>>>>>> 682b159 (更改design, allocation)
