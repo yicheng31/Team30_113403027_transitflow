@@ -8,9 +8,9 @@ This report is based on visible commit history, merged pull requests, and change
 
 | Full Name | Student ID | GitHub Username | Email |
 |---|---|---|---|
-| Yicheng | TODO | `yicheng31` | `howie3429@gmail.com` |
-| Fongyi | TODO | `floyd941211` | `floyd941211@gmail.com` |
-| Yuhao | TODO | `lai-yu-hao1026` | `laiyuhao1586@gmail.com` |
+| Yicheng | 113403027 | `yicheng31` | `howie3429@gmail.com` |
+| Fongyi | 113403020  | `floyd941211` | `floyd941211@gmail.com` |
+| Yuhao | 113403029 | `lai-yu-hao1026` | `laiyuhao1586@gmail.com` |
 
 ## 2. Commit / PR Evidence Summary
 
