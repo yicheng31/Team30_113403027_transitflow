@@ -1243,6 +1243,19 @@ def query_policy_vector_search(embedding: list[float], top_k: int = VECTOR_TOP_K
             return [dict(row) for row in cur.fetchall()]
 
 
+# Check whether vector policy documents have already been seeded.
+def policy_documents_seeded() -> bool:
+    """
+    Return True when the policy document table already contains data.
+    Used by skeleton/seed_vectors.py to avoid duplicate vector seeding.
+    """
+    sql = "SELECT EXISTS (SELECT 1 FROM policy_documents LIMIT 1)"
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return cur.fetchone()[0]
+
+
 # Store one embedded policy document during vector seeding.
 def store_policy_document(
     title: str,

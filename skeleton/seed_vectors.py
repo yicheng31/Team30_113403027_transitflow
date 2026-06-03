@@ -26,7 +26,7 @@ DATA_DIR = os.path.join(PROJECT_DIR, "train-mock-data")
 sys.path.insert(0, PROJECT_DIR)
 
 from skeleton.llm_provider import llm
-from databases.relational.queries import store_policy_document
+from databases.relational.queries import policy_documents_seeded, store_policy_document
 
 
 def _load(filename):
@@ -85,6 +85,11 @@ def build_documents():
 
 
 def seed():
+    if policy_documents_seeded():
+        print("✅ Policy documents already seeded; skipping vector seeding.")
+        print("   To rebuild embeddings, clear policy_documents first, then re-run this script.")
+        return
+
     documents = build_documents()
     print(f"📄 Embedding {len(documents)} policy documents using {llm.chat_provider}...\n")
 
