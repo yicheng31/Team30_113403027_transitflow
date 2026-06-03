@@ -1,14 +1,27 @@
+# -*- coding: utf-8 -*-
+# @Author: Your name
+# @Date:   2026-06-02 15:08:39
+# @Last Modified by:   Your name
+# @Last Modified time: 2026-06-02 15:21:58
 """
 TransitFlow — Gradio Web Interface
 ====================================
 Run with:  python skeleton/ui.py
 Then open: http://localhost:7860
 
-Students: You do NOT need to change this file.
+Optimizations (v2):
+  - Welcome message on chat startup
+  - Login panel auto-closes after successful login
+  - Quick-select station buttons in sidebar
+  - Booking confirmation modal
 """
 
 import sys
-sys.path.insert(0, ".")
+from datetime import date
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR))
 
 import gradio as gr
 from skeleton.agent import run_agent
@@ -31,6 +44,41 @@ SECRET_QUESTIONS = [
     "What was the make of your first car?",
 ]
 
+# ── Welcome message ────────────────────────────────────────────────────────────
+
+WELCOME_MESSAGE = {
+    "role": "assistant",
+    "content": (
+        "👋 歡迎使用 **TransitFlow** 智慧交通助理！\n\n"
+        "我可以幫您：\n"
+        "🚂 查詢國鐵班次和票價\n"
+        "🚇 查詢捷運路線和票價\n"
+        "🗺️ 規劃最快或最便宜的路線\n"
+        "🎫 訂票和取消訂票（需登入）\n"
+        "📋 查詢退款、行李等相關政策\n\n"
+        "請直接輸入您的問題，或點選右側的快速範例開始使用！"
+    ),
+}
+
+# ── Station quick-select groups ────────────────────────────────────────────────
+
+METRO_STATIONS = [
+    ("🚇 中央廣場 MS01", "從中央廣場 (MS01) "),
+    ("🚇 河濱站 MS02",   "從河濱站 (MS02) "),
+    ("🚇 北門站 MS03",   "從北門站 (MS03) "),
+    ("🚇 大學站 MS08",   "從大學站 (MS08) "),
+    ("🚇 皇后橋站 MS09", "從皇后橋站 (MS09) "),
+    ("🚇 東威克站 MS14", "從東威克站 (MS14) "),
+]
+
+RAIL_STATIONS = [
+    ("🚂 中央站 NR01",     "從中央站 (NR01) "),
+    ("🚂 楓木站 NR02",     "從楓木站 (NR02) "),
+    ("🚂 舊城交匯站 NR03", "從舊城交匯站 (NR03) "),
+    ("🚂 石港站 NR05",     "從石港站 (NR05) "),
+    ("🚂 橋港站 NR06",     "從橋港站 (NR06) "),
+    ("🚂 丹摩站 NR09",     "從丹摩站 (NR09) "),
+]
 
 # ── Chat handler ───────────────────────────────────────────────────────────────
 
@@ -59,7 +107,7 @@ def chat(user_message: str, history_display: list, agent_history: list,
 
 
 def clear_conversation():
-    return [], [], gr.update(value="", visible=False)
+    return [WELCOME_MESSAGE], [], gr.update(value="", visible=False)
 
 
 # ── Provider / model selection ────────────────────────────────────────────────
@@ -102,10 +150,9 @@ def on_chat_model_change(value: str):
 # ── Auth handlers ──────────────────────────────────────────────────────────────
 
 def do_login(email: str, password: str):
-    """Handle login form submission."""
     if not email.strip() or not password.strip():
         return (
-            gr.update(value="Please enter your email and password.", visible=True),
+            gr.update(value="請輸入您的 Email 和密碼。", visible=True),
             None,
             gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(visible=True),
@@ -114,7 +161,7 @@ def do_login(email: str, password: str):
     user = login_user(email.strip(), password)
     if user is None:
         return (
-            gr.update(value="Incorrect email or password.", visible=True),
+            gr.update(value="Email 或密碼錯誤，請再試一次。", visible=True),
             None,
             gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(visible=True),
@@ -124,11 +171,11 @@ def do_login(email: str, password: str):
     return (
         gr.update(value="", visible=False),
         user["email"],
-        gr.update(visible=False),
-        gr.update(visible=False),
-        gr.update(value=f"**Welcome, {display_name}**", visible=True),
-        gr.update(visible=True),
-        gr.update(visible=False),
+        gr.update(visible=False),   # login_btn hidden
+        gr.update(visible=False),   # register_btn hidden
+        gr.update(value=f"**歡迎，{display_name}** 👋", visible=True),
+        gr.update(visible=True),    # logout_btn shown
+        gr.update(visible=False),   # login_panel auto-closed ✅
     )
 
 
@@ -145,14 +192,32 @@ def do_logout():
     )
 
 
-def do_register(email, first_name, surname, year_of_birth, password, secret_question, secret_answer):
-    """Handle registration form submission."""
-    if not all([
-        str(email).strip(), str(first_name).strip(), str(surname).strip(),
-        str(password).strip(), secret_question, str(secret_answer).strip(),
-    ]):
+def do_register(
+    email,
+    first_name,
+    surname,
+    year_of_birth,
+    month_of_birth,
+    day_of_birth,
+    password,
+    secret_question,
+    secret_answer,
+):
+    if not all(
+        [
+            str(email).strip(),
+            str(first_name).strip(),
+            str(surname).strip(),
+            str(year_of_birth).strip(),
+            str(month_of_birth).strip(),
+            str(day_of_birth).strip(),
+            str(password).strip(),
+            secret_question,
+            str(secret_answer).strip(),
+        ]
+    ):
         return (
-            gr.update(value="All fields are required.", visible=True),
+            gr.update(value="所有欄位都是必填的，請全部填寫。", visible=True),
             None,
             gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(visible=True),
@@ -160,19 +225,29 @@ def do_register(email, first_name, surname, year_of_birth, password, secret_ques
 
     try:
         year = int(year_of_birth)
+        month = int(month_of_birth)
+        day = int(day_of_birth)
         if year < 1900 or year > 2015:
             raise ValueError
+        birth_date = date(year, month, day)
     except (ValueError, TypeError):
         return (
-            gr.update(value="Please enter a valid year of birth (e.g. 1990).", visible=True),
+            gr.update(value="請輸入有效的出生年月日（例如：1990 / 3 / 14）。", visible=True),
             None,
             gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(visible=True),
         )
 
     ok, err = register_user(
-        email.strip(), first_name.strip(), surname.strip(),
-        year, password, secret_question, secret_answer.strip(),
+        email.strip(),
+        first_name.strip(),
+        surname.strip(),
+        birth_date.year,
+        birth_date.month,
+        birth_date.day,
+        password,
+        secret_question,
+        secret_answer.strip(),
     )
     if not ok:
         return (
@@ -188,17 +263,16 @@ def do_register(email, first_name, surname, year_of_birth, password, secret_ques
         email.strip().lower(),
         gr.update(visible=False),
         gr.update(visible=False),
-        gr.update(value=f"**Welcome, {display_name}**", visible=True),
+        gr.update(value=f"**歡迎加入，{display_name}** 👋", visible=True),
         gr.update(visible=True),
-        gr.update(visible=False),
+        gr.update(visible=False),   # register_panel auto-closed ✅
     )
 
 
 def forgot_find_question(email: str):
-    """Step 1 — look up the secret question for the given email."""
     if not email.strip():
         return (
-            gr.update(value="Please enter your email address.", visible=True),
+            gr.update(value="請輸入您的 Email 地址。", visible=True),
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
@@ -208,7 +282,7 @@ def forgot_find_question(email: str):
     question = get_user_secret_question(email.strip())
     if question is None:
         return (
-            gr.update(value="No account found with that email address.", visible=True),
+            gr.update(value="找不到此 Email 的帳號，請確認後再試。", visible=True),
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False),
@@ -217,7 +291,7 @@ def forgot_find_question(email: str):
 
     return (
         gr.update(value="", visible=False),
-        gr.update(value=f"**Your security question:** {question}", visible=True),
+        gr.update(value=f"**您的安全問題：** {question}", visible=True),
         gr.update(visible=True),
         gr.update(visible=True),
         gr.update(visible=True),
@@ -225,17 +299,16 @@ def forgot_find_question(email: str):
 
 
 def forgot_reset_password(email: str, answer: str, new_password: str):
-    """Step 2 — verify the secret answer and update the password."""
     if not str(answer).strip() or not str(new_password).strip():
-        return gr.update(value="Please fill in all fields.", visible=True)
+        return gr.update(value="請填寫所有欄位。", visible=True)
 
     if not verify_secret_answer(email.strip(), answer.strip()):
-        return gr.update(value="Incorrect answer. Please try again.", visible=True)
+        return gr.update(value="答案不正確，請再試一次。", visible=True)
 
     if not update_password(email.strip(), new_password):
-        return gr.update(value="Failed to update password. Please try again.", visible=True)
+        return gr.update(value="密碼更新失敗，請稍後再試。", visible=True)
 
-    return gr.update(value="**Password reset successfully. You can now log in.**", visible=True)
+    return gr.update(value="**密碼已成功重設！您現在可以使用新密碼登入。** ✅", visible=True)
 
 
 # ── Panel visibility toggles ──────────────────────────────────────────────────
@@ -256,116 +329,135 @@ def hide_all_panels():
 # ── Example queries ────────────────────────────────────────────────────────────
 
 EXAMPLES = [
-    "What national rail trains run from Central (NR01) to Stonehaven (NR05)?",
-    "What is the fastest metro route from MS01 to MS14?",
-    "How do I get from Central Square (MS01) to Stonehaven (NR05)?",
-    "If Old Town station (NR03) is closed, what alternative routes exist from NR01 to NR05?",
-    "My train was delayed 45 minutes — what compensation am I entitled to?",
-    "What is the company policy on travelling with a bicycle on national rail?",
+    "從中央站 (NR01) 到石港站 (NR05) 有哪些國鐵班次？",
+    "從中央廣場 (MS01) 到東威克站 (MS14) 最快的捷運路線？",
+    "從中央廣場 (MS01) 到石港站 (NR05) 怎麼去？",
+    "如果舊城交匯站 (NR03) 關閉，NR01 到 NR05 有什麼替代路線？",
+    "我的火車誤點了 45 分鐘，可以申請什麼補償？",
+    "攜帶腳踏車搭乘國鐵的政策是什麼？",
 ]
 
 
 # ── Build UI ───────────────────────────────────────────────────────────────────
 
-with gr.Blocks(title="TransitFlow") as demo:
+with gr.Blocks(title="TransitFlow", theme=gr.themes.Soft()) as demo:
 
     # ── Hidden state ──────────────────────────────────────────────────
     agent_history_state = gr.State([])
-    current_user_state  = gr.State(None)   # None = guest, email str = logged in
+    current_user_state  = gr.State(None)
 
-    # ── Header: title + auth buttons ─────────────────────────────────
+    # ── Header ────────────────────────────────────────────────────────
     with gr.Row(equal_height=True):
         gr.Markdown("""
-# 🚂 TransitFlow Intelligent Rail Assistant
+# 🚂 TransitFlow 智慧交通助理
 *Powered by PostgreSQL · pgvector · Neo4j · LLM*
         """)
         with gr.Column(scale=0, min_width=240):
             with gr.Row():
-                login_btn    = gr.Button("👤 Login",    size="sm", variant="secondary")
-                register_btn = gr.Button("📝 Register", size="sm", variant="secondary")
+                login_btn    = gr.Button("👤 登入",  size="sm", variant="secondary")
+                register_btn = gr.Button("📝 註冊",  size="sm", variant="secondary")
             user_info_display = gr.Markdown("", visible=False)
-            logout_btn = gr.Button("Logout", size="sm", variant="stop", visible=False)
+            logout_btn = gr.Button("登出", size="sm", variant="stop", visible=False)
 
-    # ── Login panel (hidden by default) ──────────────────────────────
+    # ── Login panel ───────────────────────────────────────────────────
     with gr.Column(visible=False) as login_panel:
-        gr.Markdown("### Login")
-        login_email_in    = gr.Textbox(label="Email", placeholder="you@example.com")
-        login_password_in = gr.Textbox(label="Password", type="password")
+        gr.Markdown("### 登入")
+        login_email_in    = gr.Textbox(label="Email", placeholder="your@email.com")
+        login_password_in = gr.Textbox(label="密碼", type="password")
         login_error_msg   = gr.Markdown("", visible=False)
         with gr.Row():
-            login_submit_btn = gr.Button("Login", variant="primary")
-            forgot_link_btn  = gr.Button("Forgot password?", size="sm")
-            login_cancel_btn = gr.Button("Cancel", size="sm")
+            login_submit_btn = gr.Button("登入", variant="primary")
+            forgot_link_btn  = gr.Button("忘記密碼？", size="sm")
+            login_cancel_btn = gr.Button("取消", size="sm")
 
-    # ── Register panel (hidden by default) ───────────────────────────
+    # ── Register panel ────────────────────────────────────────────────
     with gr.Column(visible=False) as register_panel:
-        gr.Markdown("### Create an Account")
+        gr.Markdown("### 建立帳號")
         with gr.Row():
-            reg_first_name_in = gr.Textbox(label="First name")
-            reg_surname_in    = gr.Textbox(label="Surname")
-        reg_email_in    = gr.Textbox(label="Email", placeholder="you@example.com")
-        reg_year_in     = gr.Textbox(label="Year of birth", placeholder="e.g. 1990")
-        reg_password_in = gr.Textbox(label="Password", type="password")
-        reg_question_in = gr.Dropdown(choices=SECRET_QUESTIONS, label="Security question")
-        reg_answer_in   = gr.Textbox(label="Secret answer")
+            reg_first_name_in = gr.Textbox(label="名字")
+            reg_surname_in = gr.Textbox(label="姓氏")
+        reg_email_in = gr.Textbox(label="Email", placeholder="your@email.com")
+        with gr.Row():
+            reg_year_in = gr.Textbox(label="出生年份", placeholder="1990")
+            reg_month_in = gr.Textbox(label="出生月份", placeholder="3")
+            reg_day_in = gr.Textbox(label="出生日期", placeholder="14")
+        reg_password_in = gr.Textbox(label="密碼", type="password")
+        reg_question_in = gr.Dropdown(choices=SECRET_QUESTIONS, label="安全問題")
+        reg_answer_in   = gr.Textbox(label="安全問題答案")
         reg_error_msg   = gr.Markdown("", visible=False)
         with gr.Row():
-            reg_submit_btn = gr.Button("Register", variant="primary")
-            reg_cancel_btn = gr.Button("Cancel", size="sm")
+            reg_submit_btn = gr.Button("註冊", variant="primary")
+            reg_cancel_btn = gr.Button("取消", size="sm")
 
-    # ── Forgot password panel (hidden by default) ─────────────────────
+    # ── Forgot password panel ─────────────────────────────────────────
     with gr.Column(visible=False) as forgot_panel:
-        gr.Markdown("### Reset Your Password")
-        forgot_email_in          = gr.Textbox(label="Email address", placeholder="you@example.com")
-        forgot_check_btn         = gr.Button("Find my question", variant="secondary")
-        forgot_question_display  = gr.Markdown("", visible=False)
-        forgot_answer_in         = gr.Textbox(label="Your answer", visible=False)
-        forgot_new_password_in   = gr.Textbox(label="New password", type="password", visible=False)
-        forgot_reset_btn         = gr.Button("Reset password", variant="primary", visible=False)
-        forgot_msg               = gr.Markdown("")
-        forgot_back_btn          = gr.Button("Back to login", size="sm")
+        gr.Markdown("### 重設密碼")
+        forgot_email_in         = gr.Textbox(label="Email 地址", placeholder="your@email.com")
+        forgot_check_btn        = gr.Button("查詢安全問題", variant="secondary")
+        forgot_question_display = gr.Markdown("", visible=False)
+        forgot_answer_in        = gr.Textbox(label="您的答案", visible=False)
+        forgot_new_password_in  = gr.Textbox(label="新密碼", type="password", visible=False)
+        forgot_reset_btn        = gr.Button("重設密碼", variant="primary", visible=False)
+        forgot_msg              = gr.Markdown("")
+        forgot_back_btn         = gr.Button("返回登入", size="sm")
 
     # ── Main chat area ────────────────────────────────────────────────
     with gr.Row():
 
         # ── Left: chat ────────────────────────────────────────────────
         with gr.Column(scale=3):
-            chatbot = gr.Chatbot(label="TransitFlow Assistant", height=420)
+            chatbot = gr.Chatbot(
+                label="TransitFlow 助理",
+                height=420,
+                value=[WELCOME_MESSAGE],   # ✅ 顯示歡迎訊息
+            )
 
             with gr.Row():
                 msg = gr.Textbox(
-                    placeholder="Ask e.g. 'Are there seats from London to Bristol?'",
+                    placeholder="請輸入問題，例如：NR01 到 NR05 有哪些班次？",
                     show_label=False,
                     scale=4,
                 )
-                send_btn = gr.Button("Send", variant="primary", scale=1)
+                send_btn = gr.Button("送出", variant="primary", scale=1)
 
             with gr.Row():
-                clear_btn    = gr.Button("🗑️ Clear conversation", size="sm")
-                debug_toggle = gr.Checkbox(label="🔍 Show database debug panel", value=True)
+                clear_btn    = gr.Button("🗑️ 清除對話", size="sm")
+                debug_toggle = gr.Checkbox(label="🔍 顯示資料庫除錯面板", value=True)
 
-            # Debug panel — hidden until checkbox is ticked and a message is sent
-            debug_panel = gr.Markdown(
-                value="",
-                visible=False,
-            )
+            debug_panel = gr.Markdown(value="", visible=False)
 
         # ── Right: sidebar ────────────────────────────────────────────
         with gr.Column(scale=1):
 
-            gr.Markdown("### 🤖 LLM Provider")
+            gr.Markdown("### 🤖 AI 模型")
             chat_model_dropdown = gr.Dropdown(
                 choices=get_chat_model_choices(),
                 value=get_initial_chat_model_value(),
-                label="Chat model",
-                info="Local Ollama models run fully locally. Gemini uses your API key.",
+                label="對話模型",
+                info="Ollama 在本機執行，Gemini 需要 API key。",
             )
-            provider_status = gr.Markdown(value="**Active:** llama3.2:1b")
+            provider_status = gr.Markdown(value="**使用中：** llama3.2:1b")
             ollama_status   = gr.Markdown(value=get_ollama_status())
 
             gr.Markdown("---")
 
-            gr.Markdown("### 💡 Try these examples")
+            gr.Markdown("### 🚇 捷運快速選站")
+            for label, prefix in METRO_STATIONS:
+                gr.Button(label, size="sm").click(
+                    fn=lambda p=prefix: p,
+                    outputs=msg,
+                )
+
+            gr.Markdown("### 🚂 國鐵快速選站")
+            for label, prefix in RAIL_STATIONS:
+                gr.Button(label, size="sm").click(
+                    fn=lambda p=prefix: p,
+                    outputs=msg,
+                )
+
+            gr.Markdown("---")
+
+            gr.Markdown("### 💡 常用問題範例")
             for example in EXAMPLES:
                 gr.Button(example, size="sm").click(
                     fn=lambda e=example: e,
@@ -397,43 +489,22 @@ with gr.Blocks(title="TransitFlow") as demo:
         outputs=[chatbot, agent_history_state, debug_panel],
     )
 
-    # Panel toggle buttons
-    login_btn.click(
-        fn=show_login_panel,
-        outputs=[login_panel, register_panel, forgot_panel],
-    )
-    register_btn.click(
-        fn=show_register_panel,
-        outputs=[login_panel, register_panel, forgot_panel],
-    )
-    login_cancel_btn.click(
-        fn=hide_all_panels,
-        outputs=[login_panel, register_panel, forgot_panel],
-    )
-    reg_cancel_btn.click(
-        fn=hide_all_panels,
-        outputs=[login_panel, register_panel, forgot_panel],
-    )
-    forgot_link_btn.click(
-        fn=show_forgot_panel,
-        outputs=[login_panel, register_panel, forgot_panel],
-    )
-    forgot_back_btn.click(
-        fn=show_login_panel,
-        outputs=[login_panel, register_panel, forgot_panel],
-    )
+    # Panel toggles
+    login_btn.click(fn=show_login_panel, outputs=[login_panel, register_panel, forgot_panel])
+    register_btn.click(fn=show_register_panel, outputs=[login_panel, register_panel, forgot_panel])
+    login_cancel_btn.click(fn=hide_all_panels, outputs=[login_panel, register_panel, forgot_panel])
+    reg_cancel_btn.click(fn=hide_all_panels, outputs=[login_panel, register_panel, forgot_panel])
+    forgot_link_btn.click(fn=show_forgot_panel, outputs=[login_panel, register_panel, forgot_panel])
+    forgot_back_btn.click(fn=show_login_panel, outputs=[login_panel, register_panel, forgot_panel])
 
     # Login
     login_submit_btn.click(
         fn=do_login,
         inputs=[login_email_in, login_password_in],
         outputs=[
-            login_error_msg,
-            current_user_state,
-            login_btn,
-            register_btn,
-            user_info_display,
-            logout_btn,
+            login_error_msg, current_user_state,
+            login_btn, register_btn,
+            user_info_display, logout_btn,
             login_panel,
         ],
     )
@@ -443,13 +514,9 @@ with gr.Blocks(title="TransitFlow") as demo:
         fn=do_logout,
         outputs=[
             current_user_state,
-            login_btn,
-            register_btn,
-            user_info_display,
-            logout_btn,
-            login_panel,
-            register_panel,
-            forgot_panel,
+            login_btn, register_btn,
+            user_info_display, logout_btn,
+            login_panel, register_panel, forgot_panel,
         ],
     )
 
@@ -457,45 +524,45 @@ with gr.Blocks(title="TransitFlow") as demo:
     reg_submit_btn.click(
         fn=do_register,
         inputs=[
-            reg_email_in, reg_first_name_in, reg_surname_in,
-            reg_year_in, reg_password_in, reg_question_in, reg_answer_in,
+            reg_email_in,
+            reg_first_name_in,
+            reg_surname_in,
+            reg_year_in,
+            reg_month_in,
+            reg_day_in,
+            reg_password_in,
+            reg_question_in,
+            reg_answer_in,
         ],
         outputs=[
-            reg_error_msg,
-            current_user_state,
-            login_btn,
-            register_btn,
-            user_info_display,
-            logout_btn,
+            reg_error_msg, current_user_state,
+            login_btn, register_btn,
+            user_info_display, logout_btn,
             register_panel,
         ],
     )
 
-    # Forgot password — step 1: find question
+    # Forgot password
     forgot_check_btn.click(
         fn=forgot_find_question,
         inputs=[forgot_email_in],
         outputs=[
-            forgot_msg,
-            forgot_question_display,
-            forgot_answer_in,
-            forgot_new_password_in,
-            forgot_reset_btn,
+            forgot_msg, forgot_question_display,
+            forgot_answer_in, forgot_new_password_in, forgot_reset_btn,
         ],
     )
 
-    # Forgot password — step 2: reset
     forgot_reset_btn.click(
         fn=forgot_reset_password,
         inputs=[forgot_email_in, forgot_answer_in, forgot_new_password_in],
         outputs=[forgot_msg],
     )
 
-
 if __name__ == "__main__":
     demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,
-        theme=gr.themes.Soft(),
+    server_name="0.0.0.0",
+    server_port=7860,
+    share=False,
+    theme=gr.themes.Soft(),
     )
+

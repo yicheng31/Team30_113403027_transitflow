@@ -37,6 +37,7 @@ class LLMProvider:
     def __init__(self):
         self.chat_provider = LLM_PROVIDER
         self._ollama_chat_model = OLLAMA_CHAT_MODEL
+        self._ollama_startup_error = ""
         # embed_provider tracks which model was used to seed the vectors.
         # It follows the startup LLM_PROVIDER; runtime chat toggling does NOT change it.
         self._embed_provider = LLM_PROVIDER
@@ -55,9 +56,12 @@ class LLMProvider:
                 http_options=types.HttpOptions(api_version="v1beta"),
             )
 
-        # Check Ollama is reachable if that's the startup provider
+        # Do a non-fatal startup check so the UI can still load and show status.
         if self.chat_provider == "ollama":
-            self._check_ollama()
+            try:
+                self._check_ollama()
+            except ConnectionError as e:
+                self._ollama_startup_error = str(e)
 
         self._print_status()
 
@@ -69,6 +73,8 @@ class LLMProvider:
         )
         if self.chat_provider == "gemini":
             print(f"[LLM] Chat: Gemini ({GEMINI_CHAT_MODEL}) | Embed: {embed_info}")
+        elif self._ollama_startup_error:
+            print(f"[LLM] Chat: Ollama unavailable ({OLLAMA_CHAT_MODEL}) | Embed: {embed_info}")
         else:
             print(f"[LLM] Chat: Ollama ({OLLAMA_CHAT_MODEL}) | Embed: {embed_info}")
 
@@ -179,6 +185,8 @@ class LLMProvider:
     # ── Ollama internals ───────────────────────────────────────────────────
 
     def _ollama_chat(self, messages: list[dict], system_prompt: str) -> str:
+        self._check_ollama()
+        self._ollama_startup_error = ""
         # Ollama only accepts {"role": ..., "content": ...} — strip any extra keys
         clean_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
         if system_prompt:
@@ -189,11 +197,20 @@ class LLMProvider:
             "stream": False,
         }
 
-        r = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
-        r.raise_for_status()
+        try:
+            r = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            detail = ""
+            response = getattr(e, "response", None)
+            if response is not None:
+                detail = f" Response: {response.text[:500]}"
+            raise ConnectionError(f"Ollama chat failed: {e}.{detail}") from e
         return r.json()["message"]["content"]
 
     def _ollama_embed(self, text: str) -> List[float]:
+        self._check_ollama()
+        self._ollama_startup_error = ""
         r = requests.post(
             f"{OLLAMA_BASE_URL}/api/embeddings",
             json={"model": OLLAMA_EMBED_MODEL, "prompt": text},
@@ -215,6 +232,8 @@ class LLMProvider:
         unlike prompt-based JSON routing which frequently produces malformed output.
         Returns [{"name": ..., "params": {...}}] — same format as the prompt router.
         """
+        self._check_ollama()
+        self._ollama_startup_error = ""
         clean = []
         if system_prompt:
             clean.append({"role": "system", "content": system_prompt})
@@ -246,8 +265,15 @@ class LLMProvider:
             "tools":   ollama_tools,
             "stream":  False,
         }
-        r = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
-        r.raise_for_status()
+        try:
+            r = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            detail = ""
+            response = getattr(e, "response", None)
+            if response is not None:
+                detail = f" Response: {response.text[:500]}"
+            raise ConnectionError(f"Ollama tool call failed: {e}.{detail}") from e
 
         raw_calls = r.json().get("message", {}).get("tool_calls", [])
         return [

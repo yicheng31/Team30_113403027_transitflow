@@ -1,0 +1,294 @@
+TransitFlow demo questions -> expected agent tools
+
+SECTION A - Relational / PostgreSQL
+
+Q1 查詢我的會員資料。
+-> get_user_profile()
+
+Q2 顯示我的帳號資訊。
+-> get_user_profile()
+
+Q3 我的 email、user_id、註冊時間是什麼？
+-> get_user_profile()
+
+Q4 查詢我的訂票紀錄。
+-> get_user_bookings()
+
+Q5 請列出我的所有 national rail bookings 和 metro trips。
+-> get_user_bookings()
+
+Q6 我的 travel history 有哪些？
+-> get_user_bookings()
+
+Q7 2026-06-15 從 Central Station NR01 到 Stonehaven NR05 有哪些 national rail services？
+-> check_national_rail_availability(origin_id="NR01", destination_id="NR05", travel_date="2026-06-15")
+
+Q8 2026-06-20 從 Central Station NR01 到 Langford End NR10 有哪些 train services？
+-> check_national_rail_availability(origin_id="NR01", destination_id="NR10", travel_date="2026-06-20")
+
+Q9 2026-06-20 從 Langford End NR10 到 Central Station NR01 有哪些車？
+-> check_national_rail_availability(origin_id="NR10", destination_id="NR01", travel_date="2026-06-20")
+
+Q10 NR_SCH03 的 standard 和 first class 票價是多少？
+-> get_national_rail_schedule_fares(schedule_id="NR_SCH03")
+
+Q11 NR_SCH04 的 standard 和 first class 票價是多少？
+-> get_national_rail_schedule_fares(schedule_id="NR_SCH04")
+
+Q12 NR_SCH01 standard class 走 4 stops 的票價是多少？
+-> get_national_rail_fare(schedule_id="NR_SCH01", fare_class="standard", stops_travelled=4)
+
+Q13 NR_SCH07 first class 走 3 stops 的票價是多少？
+-> get_national_rail_fare(schedule_id="NR_SCH07", fare_class="first", stops_travelled=3)
+
+Q14 NR_SCH01 在 2026-06-15 的 standard class 還有哪些座位？
+-> get_available_seats(schedule_id="NR_SCH01", travel_date="2026-06-15", fare_class="standard")
+
+Q15 NR_SCH03 在 2026-06-20 的 first class 還有哪些座位？
+-> get_available_seats(schedule_id="NR_SCH03", travel_date="2026-06-20", fare_class="first")
+
+Q16 從 Central Square MS01 到 Elm Park MS04 的 metro fare 是多少？會經過幾站？
+-> get_metro_fare(origin_id="MS01", destination_id="MS04")
+
+Q17 從 University MS08 到 Queensbridge MS09 的票價是多少？
+-> get_metro_fare(origin_id="MS08", destination_id="MS09")
+
+Q18 從 Parkside MS10 到 Elm Park MS04 有 metro service 嗎？
+-> check_metro_availability(origin_id="MS10", destination_id="MS04")
+
+Q19 MS_SCH01 走 3 stops 的 metro fare 是多少？
+-> calculate_metro_fare(schedule_id="MS_SCH01", stops_travelled=3)
+
+Q20 我想訂 2026-06-15 從 Central Station NR01 到 Stonehaven NR05 的 NR_SCH01 standard class 車票，座位 any。
+-> check_national_rail_availability(origin_id="NR01", destination_id="NR05", travel_date="2026-06-15")
+-> get_national_rail_schedule_fares(schedule_id="NR_SCH01")
+-> get_available_seats(schedule_id="NR_SCH01", travel_date="2026-06-15", fare_class="standard")
+
+Q21 我想訂 2026-06-20 從 Central Station NR01 到 Langford End NR10 的 standard class 車票。
+-> check_national_rail_availability(origin_id="NR01", destination_id="NR10", travel_date="2026-06-20")
+-> get_national_rail_fare(schedule_id="NR_SCH03", fare_class="standard", stops_travelled=5)
+-> get_available_seats(schedule_id="NR_SCH03", travel_date="2026-06-20", fare_class="standard")
+
+Q22 我要訂 2026-06-15 NR_SCH01，從 NR01 到 NR05，standard class，座位 B05。 //有問題?
+-> check_national_rail_availability(origin_id="NR01", destination_id="NR05", travel_date="2026-06-15")
+-> get_national_rail_schedule_fares(schedule_id="NR_SCH01")
+-> get_available_seats(schedule_id="NR_SCH01", travel_date="2026-06-15", fare_class="standard")
+
+Q23 確認，幫我完成訂票。//有問題?
+-> make_booking(schedule_id="<from previous context>", origin_station_id="<from previous context>", destination_station_id="<from previous context>", travel_date="<from previous context>", fare_class="<from previous context>", seat_id="<from previous context>", ticket_type="<from previous context or single>")
+
+Q24 請取消 booking BK001。//有問題
+-> cancel_booking(booking_id="BK001")
+
+Q25 我要取消我的 booking BK020。//有問題
+-> cancel_booking(booking_id="BK020")
+
+Q26 請取消剛剛那張票。
+-> cancel_booking(booking_id="<booking_id from previous context>")
+
+Q27 BK001 的付款資訊是什麼？
+-> get_payment_info(booking_id="BK001")
+
+Q28 請查詢 booking BK020 的 payment details。
+-> get_payment_info(booking_id="BK020")
+
+Q29 MT001 的付款方式和金額是什麼？
+-> get_payment_info(booking_id="MT001")
+
+Q30 如果 express service 出發前 30 小時取消，可以退多少？
+-> search_policy(query="如果 express service 出發前 30 小時取消，可以退多少？")
+
+Q31 如果我的 train delay 45 分鐘，可以申請補償嗎？
+-> search_policy(query="如果我的 train delay 45 分鐘，可以申請補償嗎？")
+
+Q32 Metro single ticket 還沒 tap in，可以退款嗎？
+-> search_policy(query="Metro single ticket 還沒 tap in，可以退款嗎？")
+
+Q33 我可以帶行李上 national rail 嗎？
+-> search_policy(query="我可以帶行李上 national rail 嗎？")
+
+Q34 我可以帶寵物或腳踏車搭車嗎？
+-> search_policy(query="我可以帶寵物或腳踏車搭車嗎？")
+
+SECTION B - Graph / Neo4j
+
+Q35 從 Thornton MS20 到 Langford End NR10 最快怎麼走？
+-> find_route(origin_id="MS20", destination_id="NR10", optimise_by="time")
+
+Q36 從 Central Square MS01 到 Old Town Junction NR03 最快路線是什麼？
+-> find_route(origin_id="MS01", destination_id="NR03", optimise_by="time")
+
+Q37 從 University MS08 到 Stonehaven NR05 怎麼走？
+-> find_route(origin_id="MS08", destination_id="NR05", optimise_by="time")
+
+Q38 從 Thornton MS20 到 Langford End NR10 最便宜怎麼走？
+-> find_route(origin_id="MS20", destination_id="NR10", optimise_by="cost")
+
+Q39 從 Central Square MS01 到 Langford End NR10 最低票價路線是什麼？
+-> find_route(origin_id="MS01", destination_id="NR10", optimise_by="cost")
+
+Q40 從 Thornton MS20 到 Langford End NR10，如果想避開 Ferndale MS15，有沒有 alternative route？
+-> find_alternative_routes(origin_id="MS20", destination_id="NR10", avoid_station_id="MS15", network="auto")
+
+Q41 從 Central Square MS01 到 Langford End NR10，避開 Old Town MS07。 // network有時候會選錯 有問題
+-> find_alternative_routes(origin_id="MS01", destination_id="NR10", avoid_station_id="MS07", network="auto")
+
+Q42 從 NR01 到 NR10，避開 NR07。
+-> find_alternative_routes(origin_id="NR01", destination_id="NR10", avoid_station_id="NR07", network="auto")
+
+Q43 從 Central Square MS01 到 Central Station NR01 要怎麼轉乘？
+-> find_route(origin_id="MS01", destination_id="NR01", optimise_by="time")
+
+Q44 從 Ferndale MS15 到 Ferndale Halt NR07 怎麼轉乘？
+-> find_route(origin_id="MS15", destination_id="NR07", optimise_by="time")
+
+Q45 從 Old Town MS07 到 Old Town Junction NR03 有 interchange 嗎？
+-> find_route(origin_id="MS07", destination_id="NR03", optimise_by="time")
+
+Q46 如果 Ferndale MS15 延誤，2 hops 內會影響哪些站？
+-> get_delay_ripple(station_id="MS15", hops=2)
+
+Q47 如果 Old Town MS07 延誤，3 hops 內會影響哪些站和線路？
+-> get_delay_ripple(station_id="MS07", hops=3)
+
+Q48 如果 Central Station NR01 延誤，2 hops 內會影響哪些站？
+-> get_delay_ripple(station_id="NR01", hops=2)
+
+Q49 MS15 hops=0 會回傳什麼？ // 有問題
+-> get_delay_ripple(station_id="MS15", hops=0)
+
+Q50 MS01 有哪些直接相鄰的站？
+-> get_station_connections(station_id="MS01")
+
+Q51 NR01 可以直接連到哪些 national rail stations？
+-> get_station_connections(station_id="NR01")
+
+SECTION C - Full demo flows
+
+Flow 1 Logged-in booking demo
+1. 查詢我的會員資料。
+-> get_user_profile()
+2. 我想訂 2026-06-20 從 Central Station NR01 到 Langford End NR10 的 standard class 車票。 //有問題
+-> check_national_rail_availability(origin_id="NR01", destination_id="NR10", travel_date="2026-06-20")
+-> get_national_rail_fare(schedule_id="NR_SCH03", fare_class="standard", stops_travelled=5)
+-> get_available_seats(schedule_id="NR_SCH03", travel_date="2026-06-20", fare_class="standard")
+3. 確認，幫我完成訂票。 //有問題
+-> make_booking(...)
+4. 查詢我的訂票紀錄。
+-> get_user_bookings()
+5. 如果我現在取消，可以退多少？
+-> search_policy(query="如果我現在取消，可以退多少？")
+6. 請取消 booking <剛剛回傳的 booking_id>。 //有問題
+-> cancel_booking(booking_id="<booking_id from previous context>")
+7. 再查一次我的訂票紀錄。
+-> get_user_bookings()
+
+Flow 2 Route / graph demo
+1. 從 Thornton MS20 到 Langford End NR10 最快怎麼走？
+-> find_route(origin_id="MS20", destination_id="NR10", optimise_by="time")
+2. 從 Thornton MS20 到 Langford End NR10 最便宜怎麼走？
+-> find_route(origin_id="MS20", destination_id="NR10", optimise_by="cost")
+3. 從 Thornton MS20 到 Langford End NR10，避開 Ferndale MS15。
+-> find_alternative_routes(origin_id="MS20", destination_id="NR10", avoid_station_id="MS15", network="auto")
+4. 如果 Ferndale MS15 延誤，2 hops 內會影響哪些站？
+-> get_delay_ripple(station_id="MS15", hops=2)
+
+Flow 3 Policy demo
+1. 如果 express service 出發前 30 小時取消，可以退多少？
+-> search_policy(query="如果 express service 出發前 30 小時取消，可以退多少？")
+2. 如果火車延誤 65 分鐘，我可以拿多少補償？
+-> search_policy(query="如果火車延誤 65 分鐘，我可以拿多少補償？")
+3. Metro single ticket 還沒 tap in，可以退款嗎？
+-> search_policy(query="Metro single ticket 還沒 tap in，可以退款嗎？")
+4. 我可以帶行李、寵物或腳踏車搭車嗎？
+-> search_policy(query="我可以帶行李、寵物或腳踏車搭車嗎？")
+
+SECTION D - Short questions under 10 tokens
+
+Q52 查我的資料
+-> get_user_profile()
+
+Q53 我的訂票？
+-> get_user_bookings()
+
+Q54 NR_SCH04票價？
+-> get_national_rail_schedule_fares(schedule_id="NR_SCH04")
+
+Q55 MS01到MS04票價？
+-> get_metro_fare(origin_id="MS01", destination_id="MS04")
+
+Q56 MS15延誤？
+-> get_delay_ripple(station_id="MS15", hops=2)
+
+Q57 NR01到NR10服務？
+-> check_national_rail_availability(origin_id="NR01", destination_id="NR10")
+
+Q58 訂NR_SCH03
+-> booking pre-check if context has date/origin/destination/fare_class
+-> otherwise ask for missing date, origin, destination, and fare_class
+
+Q59 取消BK001
+-> cancel_booking(booking_id="BK001")
+
+BMS-demo 老師可能會出的刁鑽問題（Demo / Defense Checklist）
+
+A. Tool Routing
+1. 從 MS01 到 NR10，避開 MS07。
+預期: find_alternative_routes(..., network="auto")
+重點: MS→NR 必須跨 network。
+
+2. 從 NR01 到 NR10，避開 NR07。
+預期: 無可行路線。
+重點: NR07 是必經站。
+
+B. Delay Ripple
+3. 如果 Ferndale MS15 延誤，2 hops 內受影響哪些站？
+預期: get_delay_ripple(MS15,2)
+追問: 為什麼 NR07 也受影響？
+答: INTERCHANGE_TO。
+
+4. MS15 hops=0 會回傳什麼？
+預期: 只回傳 MS15 自己。
+
+C. Booking
+5. 我要訂票。
+重點: 資訊不足時應追問。
+
+6. 我要訂票 → 確認
+重點: 是否真的觸發 make_booking。
+
+7. 未登入直接訂票。
+重點: 是否要求登入。
+
+D. 不存在資料
+8. NR_SCH99 的票價是多少？
+9. BK99999 可以取消嗎？
+10. NR99 到 NR01 有哪些服務？
+重點: 不可 hallucinate。
+
+E. Graph
+11. Thornton MS20 → Langford End NR10 最快怎麼走？
+12. Thornton MS20 → Langford End NR10 最便宜怎麼走？
+重點: 路線應可能不同。
+
+13. Thornton MS20 → Langford End NR10，避開 Ferndale MS15。
+重點: path 不應出現 MS15。
+
+F. 權限
+14. Alice 有哪些訂票紀錄？
+15. Alice 的付款資訊是什麼？
+重點: 只能查 current_user。
+
+G. Interchange
+16. MS01 → NR01 怎麼轉乘？
+重點: INTERCHANGE_TO，票價 0。
+
+Demo 前必測：
+1. 確認是否 make_booking
+2. MS15 hops=0
+3. MS01 → NR10 避開 MS07
+4. BK99999 取消
+5. NR_SCH99 票價
+6. Alice 權限
+7. Cheapest vs Fastest
+

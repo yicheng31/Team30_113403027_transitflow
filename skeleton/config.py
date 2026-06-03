@@ -28,7 +28,7 @@ OLLAMA_TIMEOUT        = int(os.getenv("OLLAMA_TIMEOUT", "300"))          # secon
 
 # ── PostgreSQL ────────────────────────────────────────────────────────────────
 PG_HOST     = os.getenv("PG_HOST",     "localhost")
-PG_PORT     = int(os.getenv("PG_PORT", "5432"))
+PG_PORT     = int(os.getenv("PG_PORT", "5433"))
 PG_USER     = os.getenv("PG_USER",     "transitflow")
 PG_PASSWORD = os.getenv("PG_PASSWORD", "transitflow")
 PG_DB       = os.getenv("PG_DB",       "transitflow")
@@ -36,7 +36,7 @@ PG_DB       = os.getenv("PG_DB",       "transitflow")
 PG_DSN = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DB}"
 
 # ── Neo4j ─────────────────────────────────────────────────────────────────────
-NEO4J_URI      = os.getenv("NEO4J_URI",      "bolt://localhost:7687")
+NEO4J_URI      = os.getenv("NEO4J_URI",      "bolt://localhost:7688")
 NEO4J_USER     = os.getenv("NEO4J_USER",     "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "transitflow")
 

@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TransitFlow Network Overview</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --ink: #1e293b;
+    --muted: #64748b;
+    --panel: #ffffff;
+    --border: #cbd5e1;
+    --m1: #1d7bd6;
+    --m2: #d64040;
+    --m3: #169b5f;
+    --m4: #e28a22;
+    --nr1: #7a4bb3;
+    --nr2: #178b8b;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: Arial, Helvetica, sans-serif;
+  }
+
+  .page {
+    max-width: 1640px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    align-items: flex-end;
+    margin-bottom: 12px;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 24px;
+    letter-spacing: 0;
+  }
+
+  .note {
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .legend {
+    display: grid;
+    grid-template-columns: repeat(3, auto);
+    gap: 8px 16px;
+    font-size: 13px;
+    color: var(--ink);
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    white-space: nowrap;
+  }
+
+  .swatch {
+    width: 24px;
+    height: 5px;
+    border-radius: 999px;
+  }
+
+  .map-frame {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: auto;
+    box-shadow: 0 6px 22px rgba(15, 23, 42, 0.10);
+  }
+
+  svg {
+    display: block;
+    min-width: 1560px;
+    width: 100%;
+    height: auto;
+    background: #ffffff;
+  }
+
+  .zone {
+    fill: #f8fafc;
+    stroke: #d7dee8;
+    stroke-width: 1.5;
+  }
+
+  .zone-title {
+    font-size: 15px;
+    font-weight: 700;
+    fill: #334155;
+    letter-spacing: 0;
+  }
+
+  .line {
+    fill: none;
+    stroke-width: 8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .transfer {
+    stroke: #475569;
+    stroke-width: 3;
+    stroke-dasharray: 8 7;
+    fill: none;
+  }
+
+  .station circle {
+    fill: #ffffff;
+    stroke: #111827;
+    stroke-width: 2.4;
+  }
+
+  .station.interchange circle {
+    stroke-width: 4;
+  }
+
+  .station.rail circle {
+    stroke: #334155;
+  }
+
+  .label {
+    font-size: 12px;
+    fill: #111827;
+    paint-order: stroke;
+    stroke: #ffffff;
+    stroke-width: 4px;
+    stroke-linejoin: round;
+  }
+
+  .id {
+    font-weight: 700;
+  }
+
+  .time {
+    font-size: 10px;
+    fill: #64748b;
+    paint-order: stroke;
+    stroke: #ffffff;
+    stroke-width: 3px;
+  }
+
+  .line-label {
+    font-size: 12px;
+    font-weight: 700;
+    fill: #ffffff;
+  }
+
+  .pill {
+    rx: 10;
+    ry: 10;
+  }
+</style>
+</head>
+<body>
+<main class="page">
+  <div class="header">
+    <div>
+      <h1>TransitFlow Network Overview</h1>
+      <p class="note">Simplified schematic from metro_stations.json and national_rail_stations.json. Dashed links are Metro/National Rail interchanges.</p>
+    </div>
+    <div class="legend" aria-label="Line legend">
+      <div class="legend-item"><span class="swatch" style="background: var(--m1)"></span>M1 Metro</div>
+      <div class="legend-item"><span class="swatch" style="background: var(--m2)"></span>M2 Metro</div>
+      <div class="legend-item"><span class="swatch" style="background: var(--m3)"></span>M3 Metro</div>
+      <div class="legend-item"><span class="swatch" style="background: var(--m4)"></span>M4 Metro</div>
+      <div class="legend-item"><span class="swatch" style="background: var(--nr1)"></span>NR1 Rail</div>
+      <div class="legend-item"><span class="swatch" style="background: var(--nr2)"></span>NR2 Rail</div>
+    </div>
+  </div>
+
+  <div class="map-frame">
+    <svg viewBox="0 0 1560 980" role="img" aria-labelledby="title desc">
+      <title id="title">TransitFlow Metro and National Rail schematic</title>
+      <desc id="desc">Metro lines M1 through M4 on the left, National Rail lines NR1 and NR2 on the right, with transfer links between Central, Old Town, and Ferndale.</desc>
+
+      <rect class="zone" x="35" y="50" width="850" height="850" rx="8"/>
+      <rect class="zone" x="930" y="50" width="590" height="850" rx="8"/>
+      <text class="zone-title" x="58" y="82">Metro Network</text>
+      <text class="zone-title" x="953" y="82">National Rail Network</text>
+
+      <!-- Metro lines -->
+      <path class="line" stroke="var(--m1)" d="M 90 180 L 205 180 L 320 180 L 435 180 L 550 180 L 665 180 L 805 180"/>
+      <path class="line" stroke="var(--m2)" d="M 90 350 L 320 180 L 435 350 L 550 350 L 665 350 L 805 350"/>
+      <path class="line" stroke="var(--m3)" d="M 805 180 L 725 510 L 610 510 L 495 510 L 380 510 L 265 510"/>
+      <path class="line" stroke="var(--m4)" d="M 805 180 L 665 350 L 725 510 L 805 655 L 685 655 L 565 655"/>
+
+      <!-- National Rail lines -->
+      <path class="line" stroke="var(--nr1)" d="M 990 180 L 1110 180 L 1230 180 L 1350 180 L 1460 180"/>
+      <path class="line" stroke="var(--nr2)" d="M 990 180 L 990 410 L 1110 410 L 1230 410 L 1350 410 L 1460 410 L 1460 560"/>
+
+      <!-- Interchange links -->
+      <path class="transfer" d="M 320 180 C 530 110, 770 110, 990 180"/>
+      <path class="transfer" d="M 435 350 C 640 305, 880 260, 1230 180"/>
+      <path class="transfer" d="M 685 655 C 820 610, 975 515, 1110 410"/>
+      <text class="time" x="665" y="115">Central interchange</text>
+      <text class="time" x="745" y="282">Old Town interchange</text>
+      <text class="time" x="920" y="594">Ferndale interchange</text>
+
+      <!-- Metro time labels -->
+      <text class="time" x="147" y="166">2</text><text class="time" x="262" y="166">3</text><text class="time" x="377" y="166">3</text>
+      <text class="time" x="492" y="166">2</text><text class="time" x="607" y="166">4</text><text class="time" x="735" y="166">3</text>
+      <text class="time" x="178" y="255">3</text><text class="time" x="365" y="268">2</text><text class="time" x="492" y="336">2</text>
+      <text class="time" x="607" y="336">4</text><text class="time" x="735" y="336">3</text>
+      <text class="time" x="770" y="350">3</text><text class="time" x="667" y="496">4</text><text class="time" x="552" y="496">2</text>
+      <text class="time" x="437" y="496">3</text><text class="time" x="322" y="496">2</text>
+      <text class="time" x="735" y="270">4</text><text class="time" x="698" y="430">4</text><text class="time" x="765" y="588">4</text>
+      <text class="time" x="745" y="641">2</text><text class="time" x="625" y="641">3</text>
+
+      <!-- Rail time labels -->
+      <text class="time" x="1050" y="166">12</text><text class="time" x="1170" y="166">18</text><text class="time" x="1290" y="166">15</text><text class="time" x="1405" y="166">20</text>
+      <text class="time" x="1008" y="298">14</text><text class="time" x="1050" y="396">16</text><text class="time" x="1170" y="396">22</text><text class="time" x="1290" y="396">21</text>
+      <text class="time" x="1480" y="487">19</text>
+
+      <!-- Line labels -->
+      <rect class="pill" x="55" y="155" width="34" height="22" fill="var(--m1)"/><text class="line-label" x="72" y="171" text-anchor="middle">M1</text>
+      <rect class="pill" x="55" y="325" width="34" height="22" fill="var(--m2)"/><text class="line-label" x="72" y="341" text-anchor="middle">M2</text>
+      <rect class="pill" x="230" y="528" width="34" height="22" fill="var(--m3)"/><text class="line-label" x="247" y="544" text-anchor="middle">M3</text>
+      <rect class="pill" x="530" y="674" width="34" height="22" fill="var(--m4)"/><text class="line-label" x="547" y="690" text-anchor="middle">M4</text>
+      <rect class="pill" x="950" y="155" width="42" height="22" fill="var(--nr1)"/><text class="line-label" x="971" y="171" text-anchor="middle">NR1</text>
+      <rect class="pill" x="950" y="385" width="42" height="22" fill="var(--nr2)"/><text class="line-label" x="971" y="401" text-anchor="middle">NR2</text>
+
+      <!-- Metro stations -->
+      <g class="station"><circle cx="90" cy="180" r="9"/><text class="label" x="90" y="145" text-anchor="middle"><tspan class="id">MS20</tspan> Thornton</text></g>
+      <g class="station"><circle cx="205" cy="180" r="9"/><text class="label" x="205" y="145" text-anchor="middle"><tspan class="id">MS05</tspan> Westfield</text></g>
+      <g class="station interchange"><circle cx="320" cy="180" r="11"/><text class="label" x="320" y="220" text-anchor="middle"><tspan class="id">MS01</tspan> Central Square</text></g>
+      <g class="station"><circle cx="435" cy="180" r="9"/><text class="label" x="435" y="145" text-anchor="middle"><tspan class="id">MS02</tspan> Riverside</text></g>
+      <g class="station"><circle cx="550" cy="180" r="9"/><text class="label" x="550" y="145" text-anchor="middle"><tspan class="id">MS03</tspan> Northgate</text></g>
+      <g class="station interchange"><circle cx="665" cy="180" r="11"/><text class="label" x="665" y="145" text-anchor="middle"><tspan class="id">MS04</tspan> Elm Park</text></g>
+      <g class="station interchange"><circle cx="805" cy="180" r="11"/><text class="label" x="805" y="145" text-anchor="middle"><tspan class="id">MS17</tspan> Broadmoor</text></g>
+
+      <g class="station"><circle cx="90" cy="350" r="9"/><text class="label" x="90" y="385" text-anchor="middle"><tspan class="id">MS06</tspan> Harbour View</text></g>
+      <g class="station interchange"><circle cx="435" cy="350" r="11"/><text class="label" x="435" y="390" text-anchor="middle"><tspan class="id">MS07</tspan> Old Town</text></g>
+      <g class="station"><circle cx="550" cy="350" r="9"/><text class="label" x="550" y="390" text-anchor="middle"><tspan class="id">MS18</tspan> Sunnyvale</text></g>
+      <g class="station interchange"><circle cx="665" cy="350" r="11"/><text class="label" x="665" y="390" text-anchor="middle"><tspan class="id">MS08</tspan> University</text></g>
+      <g class="station"><circle cx="805" cy="350" r="9"/><text class="label" x="805" y="390" text-anchor="middle"><tspan class="id">MS09</tspan> Queensbridge</text></g>
+
+      <g class="station"><circle cx="725" cy="510" r="9"/><text class="label" x="747" y="505"><tspan class="id">MS12</tspan> Lakeshore</text></g>
+      <g class="station"><circle cx="610" cy="510" r="9"/><text class="label" x="610" y="550" text-anchor="middle"><tspan class="id">MS10</tspan> Parkside</text></g>
+      <g class="station"><circle cx="495" cy="510" r="9"/><text class="label" x="495" y="550" text-anchor="middle"><tspan class="id">MS11</tspan> Greenhill</text></g>
+      <g class="station"><circle cx="380" cy="510" r="9"/><text class="label" x="380" y="550" text-anchor="middle"><tspan class="id">MS19</tspan> Redwood</text></g>
+      <g class="station"><circle cx="265" cy="510" r="9"/><text class="label" x="265" y="550" text-anchor="middle"><tspan class="id">MS13</tspan> Clifton</text></g>
+
+      <g class="station"><circle cx="805" cy="655" r="9"/><text class="label" x="805" y="695" text-anchor="middle"><tspan class="id">MS14</tspan> Eastwick</text></g>
+      <g class="station interchange"><circle cx="685" cy="655" r="11"/><text class="label" x="685" y="695" text-anchor="middle"><tspan class="id">MS15</tspan> Ferndale</text></g>
+      <g class="station"><circle cx="565" cy="655" r="9"/><text class="label" x="565" y="695" text-anchor="middle"><tspan class="id">MS16</tspan> Hilltop</text></g>
+
+      <!-- Rail stations -->
+      <g class="station rail interchange"><circle cx="990" cy="180" r="11"/><text class="label" x="990" y="145" text-anchor="middle"><tspan class="id">NR01</tspan> Central Station</text></g>
+      <g class="station rail"><circle cx="1110" cy="180" r="9"/><text class="label" x="1110" y="145" text-anchor="middle"><tspan class="id">NR02</tspan> Maplewood</text></g>
+      <g class="station rail interchange"><circle cx="1230" cy="180" r="11"/><text class="label" x="1230" y="145" text-anchor="middle"><tspan class="id">NR03</tspan> Old Town Junction</text></g>
+      <g class="station rail"><circle cx="1350" cy="180" r="9"/><text class="label" x="1350" y="145" text-anchor="middle"><tspan class="id">NR04</tspan> Ashford</text></g>
+      <g class="station rail"><circle cx="1460" cy="180" r="9"/><text class="label" x="1460" y="145" text-anchor="middle"><tspan class="id">NR05</tspan> Stonehaven</text></g>
+
+      <g class="station rail"><circle cx="990" cy="410" r="9"/><text class="label" x="990" y="450" text-anchor="middle"><tspan class="id">NR06</tspan> Bridgeport</text></g>
+      <g class="station rail interchange"><circle cx="1110" cy="410" r="11"/><text class="label" x="1110" y="450" text-anchor="middle"><tspan class="id">NR07</tspan> Ferndale Halt</text></g>
+      <g class="station rail"><circle cx="1230" cy="410" r="9"/><text class="label" x="1230" y="450" text-anchor="middle"><tspan class="id">NR08</tspan> Coalport</text></g>
+      <g class="station rail"><circle cx="1350" cy="410" r="9"/><text class="label" x="1350" y="450" text-anchor="middle"><tspan class="id">NR09</tspan> Dunmore</text></g>
+      <g class="station rail"><circle cx="1460" cy="560" r="9"/><text class="label" x="1460" y="600" text-anchor="middle"><tspan class="id">NR10</tspan> Langford End</text></g>
+
+      <text class="time" x="58" y="868">Numbers beside line segments are travel times in minutes.</text>
+      <text class="time" x="58" y="888">Thicker black station rings indicate line changes or Metro/National Rail interchange points.</text>
+    </svg>
+  </div>
+</main>
+</body>
+</html>

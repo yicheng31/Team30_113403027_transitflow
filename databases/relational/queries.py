@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Author: Your name
+# @Date:   2026-05-28 14:29:40
+# @Last Modified by:   Your name
+# @Last Modified time: 2026-06-02 15:20:20
 """
 TransitFlow — PostgreSQL / Relational Database Layer
 =====================================================
@@ -25,15 +30,22 @@ from __future__ import annotations
 import json
 import random
 import string
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
 import psycopg2
 import psycopg2.extras
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, VerificationError
 
 from skeleton.config import PG_DSN, VECTOR_TOP_K, VECTOR_SIMILARITY_THRESHOLD
 
 
+PASSWORD_HASHER = PasswordHasher()
+
+
+# Shared PostgreSQL connection helper used by read-only query functions.
 def _connect():
     """Return a new psycopg2 connection with autocommit enabled."""
     conn = psycopg2.connect(PG_DSN)
@@ -41,14 +53,40 @@ def _connect():
     return conn
 
 
-def _gen_booking_id() -> str:
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"BK-{suffix}"
+# External display IDs are generated from the current max matching prefix.
+def _gen_prefixed_id(cur, table: str, column: str, prefix: str) -> str:
+    """Create the next sequential external code, such as BK021 or PM041."""
+    # Only count IDs that match the seeded numeric format. Older random IDs like
+    # BK-ABC123 remain valid, but they should not control the next sequence.
+    cur.execute(
+        f"""
+        SELECT COALESCE(MAX(SUBSTRING({column} FROM %s)::INTEGER), 0)
+        FROM {table}
+        WHERE {column} ~ %s
+        """,
+        (len(prefix) + 1, f"^{prefix}[0-9]+$"),
+    )
+    next_number = cur.fetchone()[0] + 1
+    return f"{prefix}{next_number:03d}"
 
 
-def _gen_payment_id() -> str:
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"PM-{suffix}"
+# External booking IDs stay separate from internal numeric primary keys.
+def _gen_booking_id(cur) -> str:
+    """Create a short external booking code for new national rail bookings."""
+    return _gen_prefixed_id(cur, "national_rail_bookings", "booking_id", "BK")
+
+
+def _gen_user_id(cur) -> str:
+    """Generate the next public user id, keeping the seeded RU01/RU02 style."""
+    cur.execute(
+        """
+        SELECT COALESCE(MAX(SUBSTRING(user_id FROM 3)::int), 0) + 1 AS next_num
+        FROM registered_users
+        WHERE user_id ~ '^RU[0-9]+$'
+        """
+    )
+    next_num = cur.fetchone()[0]
+    return f"RU{next_num:02d}"
 
 
 # ── Example ───────────────────────────────────────────────────────────────────
@@ -56,6 +94,23 @@ def _gen_payment_id() -> str:
 # Use _connect() for read-only queries; for write operations use a manual
 # connection with conn.commit() / conn.rollback() (see execute_booking below).
 
+# Normalise count-like tool parameters before using them in fare math.
+def _positive_int_or_none(value) -> Optional[int]:
+    """Convert a value to a positive integer, or return None for invalid input."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+# Keep email comparisons consistent across login, booking, and payment lookups.
+def _normalise_email(email: str) -> str:
+    """Apply the shared email format used for lookup and uniqueness checks."""
+    return (email or "").strip().lower()
+
+
+# Tiny connectivity smoke test for PostgreSQL.
 def example_query() -> dict:
     """Example: returns the name of the connected database."""
     with _connect() as conn:
@@ -63,12 +118,13 @@ def example_query() -> dict:
             cur.execute("SELECT current_database() AS db;")
             return dict(cur.fetchone())
 
-# TODO: Implement the query_ and execute_ functions below.
+# Relational QUERY and transaction functions implementation.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 # ── NATIONAL RAIL AVAILABILITY ────────────────────────────────────────────────
 
+# List rail services that can carry a passenger between two stations.
 def query_national_rail_availability(
     origin_id: str,
     destination_id: str,
@@ -83,9 +139,67 @@ def query_national_rail_availability(
         destination_id:  e.g. "NR05"
         travel_date:     e.g. "2025-06-01" — used to count bookings; omit for general info
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    sql = """
+        SELECT
+            s.schedule_id,
+            s.line,
+            s.service_type,
+            s.direction,
+            orig.station_id AS origin_station_id,
+            orig.name AS origin_name,
+            dest.station_id AS destination_station_id,
+            dest.name AS destination_name,
+            s.first_train_time::text,
+            s.last_train_time::text,
+            s.frequency_min,
+            origin_stop.stop_sequence AS origin_sequence,
+            destination_stop.stop_sequence AS destination_sequence,
+            destination_stop.stop_sequence - origin_stop.stop_sequence AS stops_travelled,
+            destination_stop.travel_time_from_origin_min
+                - origin_stop.travel_time_from_origin_min AS travel_time_min,
+            COUNT(seat.id) AS total_seats,
+            COUNT(active_booking.id) AS booked_seats,
+            COUNT(seat.id) - COUNT(active_booking.id) AS available_seats,
+            CASE
+                WHEN COUNT(seat.id) = 0 THEN 'not_configured'
+                WHEN COUNT(seat.id) - COUNT(active_booking.id) = 0 THEN 'sold_out'
+                ELSE 'available'
+            END AS availability_status
+        FROM national_rail_schedules s
+        JOIN national_rail_schedule_stops origin_stop
+            ON origin_stop.national_rail_schedule_pk = s.id
+        JOIN national_rail_stations orig
+            ON orig.id = origin_stop.national_rail_station_pk
+        JOIN national_rail_schedule_stops destination_stop
+            ON destination_stop.national_rail_schedule_pk = s.id
+        JOIN national_rail_stations dest
+            ON dest.id = destination_stop.national_rail_station_pk
+        LEFT JOIN national_rail_seats seat
+            ON seat.national_rail_schedule_pk = s.id
+        LEFT JOIN national_rail_bookings active_booking
+            ON active_booking.national_rail_schedule_pk = s.id
+           AND active_booking.national_rail_seat_pk = seat.id
+           AND active_booking.status <> 'cancelled'
+           AND (%s::date IS NOT NULL AND active_booking.travel_date = %s::date)
+        WHERE orig.station_id = %s
+          AND dest.station_id = %s
+          AND origin_stop.stop_sequence < destination_stop.stop_sequence
+        GROUP BY
+            s.id, s.schedule_id, s.line, s.service_type, s.direction,
+            orig.station_id, orig.name, dest.station_id, dest.name,
+            s.first_train_time, s.last_train_time, s.frequency_min,
+            origin_stop.stop_sequence, destination_stop.stop_sequence,
+            origin_stop.travel_time_from_origin_min,
+            destination_stop.travel_time_from_origin_min
+        ORDER BY s.schedule_id
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (travel_date, travel_date, origin_id, destination_id))
+            return [dict(row) for row in cur.fetchall()]
 
 
+# Compute one rail fare class once the route stop count is known.
 def query_national_rail_fare(
     schedule_id: str,
     fare_class: str,
@@ -102,11 +216,95 @@ def query_national_rail_fare(
     Returns:
         dict with fare_class, base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    stops_travelled = _positive_int_or_none(stops_travelled)
+    if stops_travelled is None:
+        return None
+
+    sql = """
+        SELECT
+            fare_class,
+            base_fare_usd,
+            per_stop_rate_usd,
+            base_fare_usd + (%s * per_stop_rate_usd) AS total_fare_usd
+        FROM national_rail_fares f
+        JOIN national_rail_schedules s
+            ON s.id = f.national_rail_schedule_pk
+        WHERE s.schedule_id = %s
+          AND f.fare_class = %s
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (stops_travelled, schedule_id, fare_class))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+# Return every fare class for a schedule-wide rail fare question.
+def query_national_rail_schedule_fares(schedule_id: str) -> list[dict]:
+    """
+    Return all fare classes for a national rail schedule using the full route.
+
+    This supports questions such as "How much is NR_SCH04?" where the user gives
+    only a schedule id and expects the ticket price for that service.
+    """
+    sql = """
+        WITH route_span AS (
+            SELECT
+                schedule.id AS schedule_pk,
+                MIN(stop.stop_sequence) AS first_stop_sequence,
+                MAX(stop.stop_sequence) AS last_stop_sequence,
+                MAX(stop.stop_sequence) - MIN(stop.stop_sequence) AS stops_travelled,
+                MIN(stop.travel_time_from_origin_min) AS first_stop_time_min,
+                MAX(stop.travel_time_from_origin_min) AS last_stop_time_min
+            FROM national_rail_schedules schedule
+            JOIN national_rail_schedule_stops stop
+                ON stop.national_rail_schedule_pk = schedule.id
+            WHERE schedule.schedule_id = %s
+            GROUP BY schedule.id
+        )
+        SELECT
+            schedule.schedule_id,
+            schedule.line,
+            schedule.service_type,
+            schedule.direction,
+            origin.station_id AS origin_station_id,
+            origin.name AS origin_name,
+            destination.station_id AS destination_station_id,
+            destination.name AS destination_name,
+            schedule.first_train_time::text,
+            schedule.last_train_time::text,
+            route_span.stops_travelled,
+            route_span.last_stop_time_min - route_span.first_stop_time_min AS travel_time_min,
+            fare.fare_class,
+            fare.base_fare_usd,
+            fare.per_stop_rate_usd,
+            fare.base_fare_usd + (route_span.stops_travelled * fare.per_stop_rate_usd)
+                AS total_fare_usd
+        FROM national_rail_schedules schedule
+        JOIN route_span
+            ON route_span.schedule_pk = schedule.id
+        JOIN national_rail_stations origin
+            ON origin.id = schedule.origin_station_pk
+        JOIN national_rail_stations destination
+            ON destination.id = schedule.destination_station_pk
+        JOIN national_rail_fares fare
+            ON fare.national_rail_schedule_pk = schedule.id
+        ORDER BY
+            CASE fare.fare_class
+                WHEN 'standard' THEN 1
+                WHEN 'first' THEN 2
+                ELSE 3
+            END
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (schedule_id,))
+            return [dict(row) for row in cur.fetchall()]
 
 
 # ── METRO SCHEDULES & FARE ────────────────────────────────────────────────────
 
+# List direct metro schedules whose stop order matches the requested trip.
 def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
     """
     Return metro schedules that serve both origin and destination in the correct order.
@@ -115,9 +313,46 @@ def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
         origin_id:       e.g. "MS01"
         destination_id:  e.g. "MS09"
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    sql = """
+        SELECT
+            s.schedule_id,
+            s.line,
+            s.direction,
+            orig.station_id AS origin_station_id,
+            orig.name AS origin_name,
+            dest.station_id AS destination_station_id,
+            dest.name AS destination_name,
+            s.first_train_time::text,
+            s.last_train_time::text,
+            s.frequency_min,
+            s.base_fare_usd,
+            s.per_stop_rate_usd,
+            origin_stop.stop_sequence AS origin_sequence,
+            destination_stop.stop_sequence AS destination_sequence,
+            destination_stop.stop_sequence - origin_stop.stop_sequence AS stops_travelled,
+            destination_stop.travel_time_from_origin_min
+                - origin_stop.travel_time_from_origin_min AS travel_time_min
+        FROM metro_schedules s
+        JOIN metro_schedule_stops origin_stop
+            ON origin_stop.metro_schedule_pk = s.id
+        JOIN metro_stations orig
+            ON orig.id = origin_stop.metro_station_pk
+        JOIN metro_schedule_stops destination_stop
+            ON destination_stop.metro_schedule_pk = s.id
+        JOIN metro_stations dest
+            ON dest.id = destination_stop.metro_station_pk
+        WHERE orig.station_id = %s
+          AND dest.station_id = %s
+          AND origin_stop.stop_sequence < destination_stop.stop_sequence
+        ORDER BY s.schedule_id
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (origin_id, destination_id))
+            return [dict(row) for row in cur.fetchall()]
 
 
+# Compute metro fare for a direct schedule and stop count.
 def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
     """
     Calculate the metro fare for a single-ticket journey.
@@ -129,11 +364,57 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
     Returns:
         dict with base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    stops_travelled = _positive_int_or_none(stops_travelled)
+    if stops_travelled is None:
+        return None
+
+    sql = """
+        SELECT
+            base_fare_usd,
+            per_stop_rate_usd,
+            base_fare_usd + (%s * per_stop_rate_usd) AS total_fare_usd
+        FROM metro_schedules
+        WHERE schedule_id = %s
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (stops_travelled, schedule_id))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+# Estimate a metro fare when route planning comes from graph traversal.
+def query_metro_fare_estimate(stops_travelled: int) -> Optional[dict]:
+    """
+    Estimate a metro fare using the configured PostgreSQL metro fare rule.
+
+    This is used when route planning comes from Neo4j and there is no single
+    direct metro schedule covering the full journey.
+    """
+    stops_travelled = _positive_int_or_none(stops_travelled)
+    if stops_travelled is None:
+        return None
+
+    sql = """
+        SELECT
+            base_fare_usd,
+            per_stop_rate_usd,
+            base_fare_usd + (%s * per_stop_rate_usd) AS total_fare_usd
+        FROM metro_schedules
+        GROUP BY base_fare_usd, per_stop_rate_usd
+        ORDER BY COUNT(*) DESC, base_fare_usd, per_stop_rate_usd
+        LIMIT 1
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (stops_travelled,))
+            row = cur.fetchone()
+            return dict(row) if row else None
 
 
 # ── SEAT SELECTION ────────────────────────────────────────────────────────────
 
+# Show seats that are not already held by active bookings on the travel date.
 def query_available_seats(
     schedule_id: str,
     travel_date: str,
@@ -150,9 +431,34 @@ def query_available_seats(
     Returns:
         List of dicts: {seat_id, coach, row, column}
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    sql = """
+        SELECT
+            seat.seat_id,
+            seat.coach,
+            seat.row_number AS row,
+            seat.seat_column AS column
+        FROM national_rail_seats seat
+        JOIN national_rail_schedules schedule
+            ON schedule.id = seat.national_rail_schedule_pk
+        WHERE schedule.schedule_id = %s
+          AND seat.fare_class = %s
+          AND NOT EXISTS (
+              SELECT 1
+              FROM national_rail_bookings booking
+              WHERE booking.national_rail_seat_pk = seat.id
+                AND booking.national_rail_schedule_pk = schedule.id
+                AND booking.travel_date = %s
+                AND booking.status <> 'cancelled'
+          )
+        ORDER BY seat.coach, seat.row_number, seat.seat_column
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (schedule_id, fare_class, travel_date))
+            return [dict(row) for row in cur.fetchall()]
 
 
+# Pick nearby seats for multi-passenger booking requests.
 def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[str]:
     """
     Select `count` seats that are as close together as possible (same row preferred,
@@ -182,28 +488,169 @@ def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[
 
 # ── USER & BOOKING QUERIES ────────────────────────────────────────────────────
 
+# Fetch the logged-in customer's public profile fields.
 def query_user_profile(user_email: str) -> Optional[dict]:
     """Return a user's profile by email."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    user_email = _normalise_email(user_email)
+    sql = """
+        SELECT
+            user_id,
+            email,
+            first_name || ' ' || surname AS full_name,
+            first_name,
+            surname,
+            phone,
+            date_of_birth,
+            EXTRACT(MONTH FROM date_of_birth)::int AS birth_month,
+            EXTRACT(DAY FROM date_of_birth)::int AS birth_day,
+            registered_at,
+            is_active
+        FROM registered_users
+        WHERE email = %s
+          AND is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (user_email,))
+            row = cur.fetchone()
+            return dict(row) if row else None
 
 
+# Combine rail bookings and metro trips for "show my bookings" requests.
 def query_user_bookings(user_email: str) -> dict:
     """
-    Return a user's combined booking history (national rail + metro).
+    Return a user's active booking/trip list (national rail + metro).
+
+    Cancelled national rail bookings stay in the database for audit/payment
+    history, but they are hidden from the normal "my bookings" view so users do
+    not see cancelled tickets as active reservations.
 
     Returns:
         dict with keys 'national_rail' (list) and 'metro' (list)
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    user_email = _normalise_email(user_email)
+    rail_sql = """
+        SELECT
+            booking.booking_id,
+            schedule.schedule_id,
+            origin.station_id AS origin_station_id,
+            origin.name AS origin_name,
+            destination.station_id AS destination_station_id,
+            destination.name AS destination_name,
+            booking.travel_date,
+            booking.departure_time::text,
+            booking.ticket_type,
+            booking.fare_class,
+            seat.coach,
+            seat.seat_id,
+            booking.stops_travelled,
+            booking.fare_usd,
+            booking.amount_usd,
+            booking.status,
+            booking.booked_at,
+            booking.travelled_at
+        FROM registered_users users
+        JOIN national_rail_bookings booking
+            ON booking.user_pk = users.id
+        JOIN national_rail_schedules schedule
+            ON schedule.id = booking.national_rail_schedule_pk
+        JOIN national_rail_stations origin
+            ON origin.id = booking.origin_station_pk
+        JOIN national_rail_stations destination
+            ON destination.id = booking.destination_station_pk
+        JOIN national_rail_seats seat
+            ON seat.id = booking.national_rail_seat_pk
+        WHERE users.email = %s
+          AND booking.status <> 'cancelled'
+        ORDER BY booking.travel_date DESC, booking.departure_time DESC
+    """
+    metro_sql = """
+        SELECT
+            trip.trip_id,
+            schedule.schedule_id,
+            origin.station_id AS origin_station_id,
+            origin.name AS origin_name,
+            destination.station_id AS destination_station_id,
+            destination.name AS destination_name,
+            trip.travel_date,
+            trip.ticket_type,
+            trip.day_pass_ref,
+            trip.stops_travelled,
+            trip.fare_usd,
+            trip.amount_usd,
+            trip.status,
+            trip.purchased_at,
+            trip.travelled_at
+        FROM registered_users users
+        JOIN metro_trips trip
+            ON trip.user_pk = users.id
+        JOIN metro_schedules schedule
+            ON schedule.id = trip.metro_schedule_pk
+        JOIN metro_stations origin
+            ON origin.id = trip.origin_station_pk
+        JOIN metro_stations destination
+            ON destination.id = trip.destination_station_pk
+        WHERE users.email = %s
+          AND users.is_active = TRUE
+        ORDER BY trip.travel_date DESC, trip.purchased_at DESC
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(rail_sql, (user_email,))
+            national_rail = [dict(row) for row in cur.fetchall()]
+            cur.execute(metro_sql, (user_email,))
+            metro = [dict(row) for row in cur.fetchall()]
+            return {"national_rail": national_rail, "metro": metro}
 
 
-def query_payment_info(booking_id: str) -> Optional[dict]:
-    """Return payment record for a booking or metro trip."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+# Find payment details for either a rail booking id or a metro trip id.
+def query_payment_info(booking_id: str, user_email: str) -> Optional[dict]:
+    """Return payment record for a booking or metro trip owned by the user."""
+    user_email = _normalise_email(user_email)
+    sql = """
+        SELECT
+            payment.payment_id,
+            COALESCE(booking.booking_id, trip.trip_id) AS booking_id,
+            CASE
+                WHEN booking.id IS NOT NULL THEN 'national_rail'
+                ELSE 'metro'
+            END AS network_type,
+            payment.amount_usd,
+            payment.refunded_amount_usd,
+            payment.method,
+            payment.status,
+            payment.paid_at,
+            payment.refunded_at
+        FROM payments payment
+        LEFT JOIN national_rail_bookings booking
+            ON booking.id = payment.national_rail_booking_pk
+        LEFT JOIN registered_users booking_user
+            ON booking_user.id = booking.user_pk
+        LEFT JOIN metro_trips trip
+            ON trip.id = payment.metro_trip_pk
+        LEFT JOIN registered_users trip_user
+            ON trip_user.id = trip.user_pk
+        WHERE (
+                booking.booking_id = %s
+                AND booking_user.email = %s
+              )
+           OR (
+                trip.trip_id = %s
+                AND trip_user.email = %s
+              )
+        ORDER BY payment.paid_at DESC
+        LIMIT 1
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (booking_id, user_email, booking_id, user_email))
+            row = cur.fetchone()
+            return dict(row) if row else None
 
 
 # ── TRANSACTIONAL OPERATIONS ──────────────────────────────────────────────────
 
+# Create the booking and its payment together so they commit or roll back as one.
 def execute_booking(
     user_id: str,
     schedule_id: str,
@@ -231,9 +678,204 @@ def execute_booking(
         (True, booking_dict)   on success
         (False, error_message) on failure
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    seat_id = (seat_id or "any").strip()
+    if seat_id.lower() == "any":
+        seat_id = "any"
+    else:
+        seat_id = seat_id.upper()
+
+    conn = psycopg2.connect(PG_DSN)
+    conn.autocommit = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM registered_users
+                WHERE user_id = %s AND is_active = TRUE
+                """,
+                (user_id,),
+            )
+            user = cur.fetchone()
+            if user is None:
+                conn.rollback()
+                return False, "User not found or inactive"
+
+            cur.execute(
+                """
+                SELECT
+                    schedule.id AS schedule_pk,
+                    schedule.first_train_time::text AS departure_time,
+                    origin_stop.stop_sequence AS origin_sequence,
+                    destination_stop.stop_sequence AS destination_sequence,
+                    destination_stop.stop_sequence - origin_stop.stop_sequence AS stops_travelled,
+                    origin.id AS origin_pk,
+                    destination.id AS destination_pk
+                FROM national_rail_schedules schedule
+                JOIN national_rail_schedule_stops origin_stop
+                    ON origin_stop.national_rail_schedule_pk = schedule.id
+                JOIN national_rail_stations origin
+                    ON origin.id = origin_stop.national_rail_station_pk
+                JOIN national_rail_schedule_stops destination_stop
+                    ON destination_stop.national_rail_schedule_pk = schedule.id
+                JOIN national_rail_stations destination
+                    ON destination.id = destination_stop.national_rail_station_pk
+                WHERE schedule.schedule_id = %s
+                  AND origin.station_id = %s
+                  AND destination.station_id = %s
+                  AND origin_stop.stop_sequence < destination_stop.stop_sequence
+                """,
+                (schedule_id, origin_station_id, destination_station_id),
+            )
+            route = cur.fetchone()
+            if route is None:
+                conn.rollback()
+                return False, "Schedule does not serve the requested route"
+
+            cur.execute(
+                """
+                SELECT
+                    fare_class,
+                    base_fare_usd,
+                    per_stop_rate_usd,
+                    base_fare_usd + (%s * per_stop_rate_usd) AS total_fare_usd
+                FROM national_rail_fares
+                WHERE national_rail_schedule_pk = %s
+                  AND fare_class = %s
+                """,
+                (route["stops_travelled"], route["schedule_pk"], fare_class),
+            )
+            fare = cur.fetchone()
+            if fare is None:
+                conn.rollback()
+                return False, "Fare class is not available for this schedule"
+
+            seat_filter = "seat.seat_id = %s" if seat_id != "any" else "TRUE"
+            seat_params: tuple = (
+                route["schedule_pk"],
+                fare_class,
+                travel_date,
+            )
+            if seat_id != "any":
+                seat_params = seat_params + (seat_id,)
+            cur.execute(
+                f"""
+                SELECT
+                    seat.id AS seat_pk,
+                    seat.seat_id,
+                    seat.coach,
+                    seat.row_number,
+                    seat.seat_column
+                FROM national_rail_seats seat
+                WHERE seat.national_rail_schedule_pk = %s
+                  AND seat.fare_class = %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM national_rail_bookings booking
+                      WHERE booking.national_rail_seat_pk = seat.id
+                        AND booking.travel_date = %s
+                        AND booking.status <> 'cancelled'
+                  )
+                  AND {seat_filter}
+                ORDER BY seat.coach, seat.row_number, seat.seat_column
+                LIMIT 1
+                """,
+                seat_params,
+            )
+            seat = cur.fetchone()
+            if seat is None:
+                conn.rollback()
+                return False, "No seats available for this schedule/date/fare class"
+
+            booking_id = _gen_booking_id(cur)
+            payment_id = _gen_payment_id(cur)
+            cur.execute(
+                """
+                INSERT INTO national_rail_bookings (
+                    booking_id,
+                    user_pk,
+                    national_rail_schedule_pk,
+                    origin_station_pk,
+                    destination_station_pk,
+                    national_rail_seat_pk,
+                    travel_date,
+                    departure_time,
+                    ticket_type,
+                    fare_class,
+                    stops_travelled,
+                    fare_usd,
+                    amount_usd,
+                    status,
+                    booked_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'confirmed', NOW())
+                RETURNING id, booking_id, booked_at
+                """,
+                (
+                    booking_id,
+                    user["id"],
+                    route["schedule_pk"],
+                    route["origin_pk"],
+                    route["destination_pk"],
+                    seat["seat_pk"],
+                    travel_date,
+                    route["departure_time"],
+                    ticket_type,
+                    fare_class,
+                    route["stops_travelled"],
+                    fare["total_fare_usd"],
+                    fare["total_fare_usd"],
+                ),
+            )
+            booking = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO payments (
+                    payment_id,
+                    national_rail_booking_pk,
+                    amount_usd,
+                    method,
+                    status,
+                    paid_at
+                )
+                VALUES (%s, %s, %s, 'ewallet', 'paid', NOW())
+                RETURNING payment_id, paid_at
+                """,
+                (payment_id, booking["id"], fare["total_fare_usd"]),
+            )
+            payment = cur.fetchone()
+            conn.commit()
+            return True, {
+                "booking_id": booking["booking_id"],
+                "payment_id": payment["payment_id"],
+                "user_id": user_id,
+                "schedule_id": schedule_id,
+                "origin_station_id": origin_station_id,
+                "destination_station_id": destination_station_id,
+                "travel_date": travel_date,
+                "departure_time": route["departure_time"],
+                "ticket_type": ticket_type,
+                "fare_class": fare_class,
+                "seat_id": seat["seat_id"],
+                "coach": seat["coach"],
+                "stops_travelled": route["stops_travelled"],
+                "fare_usd": fare["total_fare_usd"],
+                "amount_usd": fare["total_fare_usd"],
+                "status": "confirmed",
+                "booked_at": booking["booked_at"],
+                "paid_at": payment["paid_at"],
+            }
+    except psycopg2.IntegrityError as exc:
+        conn.rollback()
+        return False, f"Booking could not be created: {exc.diag.message_primary}"
+    except Exception as exc:
+        conn.rollback()
+        return False, str(exc)
+    finally:
+        conn.close()
 
 
+# Cancel a booking and update refund status in the same transaction.
 def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | str]:
     """
     Cancel a national rail booking owned by the given user.
@@ -250,16 +892,155 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         (True, result_dict)  with refund_amount_usd and policy note
         (False, error_msg)
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    conn = psycopg2.connect(PG_DSN)
+    conn.autocommit = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    booking.id AS booking_pk,
+                    booking.booking_id,
+                    booking.fare_usd,
+                    booking.amount_usd,
+                    booking.status,
+                    booking.travel_date,
+                    booking.departure_time,
+                    schedule.service_type,
+                    payment.id AS payment_pk
+                FROM national_rail_bookings booking
+                JOIN registered_users users
+                    ON users.id = booking.user_pk
+                JOIN national_rail_schedules schedule
+                    ON schedule.id = booking.national_rail_schedule_pk
+                LEFT JOIN payments payment
+                    ON payment.national_rail_booking_pk = booking.id
+                WHERE booking.booking_id = %s
+                  AND users.user_id = %s
+                FOR UPDATE OF booking
+                """,
+                (booking_id, user_id),
+            )
+            booking = cur.fetchone()
+            if booking is None:
+                conn.rollback()
+                return False, "Booking not found for this user"
+            if booking["status"] == "cancelled":
+                conn.rollback()
+                return False, "Booking is already cancelled"
+
+            scheduled_at = datetime.combine(
+                booking["travel_date"],
+                booking["departure_time"],
+                tzinfo=timezone.utc,
+            )
+            hours_before = (scheduled_at - datetime.now(timezone.utc)).total_seconds() / 3600
+            amount = booking["fare_usd"]
+            if not isinstance(amount, Decimal):
+                amount = Decimal(str(amount))
+
+            if booking["service_type"] == "express":
+                if hours_before >= 48:
+                    refund_percent, admin_fee, note = Decimal("100"), Decimal("1.00"), "RF002 early cancellation"
+                elif hours_before >= 24:
+                    refund_percent, admin_fee, note = Decimal("50"), Decimal("1.00"), "RF002 late cancellation"
+                else:
+                    refund_percent, admin_fee, note = Decimal("0"), Decimal("0.00"), "RF002 no refund"
+            else:
+                if hours_before >= 48:
+                    refund_percent, admin_fee, note = Decimal("100"), Decimal("0.00"), "RF001 early cancellation"
+                elif hours_before >= 24:
+                    refund_percent, admin_fee, note = Decimal("75"), Decimal("0.50"), "RF001 standard cancellation"
+                elif hours_before >= 2:
+                    refund_percent, admin_fee, note = Decimal("50"), Decimal("0.50"), "RF001 late cancellation"
+                else:
+                    refund_percent, admin_fee, note = Decimal("0"), Decimal("0.00"), "RF001 no refund"
+
+            refund_amount = (amount * refund_percent / Decimal("100")) - admin_fee
+            if refund_amount < 0:
+                refund_amount = Decimal("0.00")
+            refund_amount = refund_amount.quantize(Decimal("0.01"))
+
+            cur.execute(
+                """
+                UPDATE national_rail_bookings
+                SET status = 'cancelled',
+                    cancelled_at = COALESCE(cancelled_at, NOW())
+                WHERE id = %s
+                """,
+                (booking["booking_pk"],),
+            )
+            if booking["payment_pk"] and refund_amount > 0:
+                cur.execute(
+                    """
+                    UPDATE payments
+                    SET status = 'refunded',
+                        refunded_amount_usd = %s,
+                        refunded_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (refund_amount, booking["payment_pk"]),
+                )
+            conn.commit()
+            return True, {
+                "booking_id": booking["booking_id"],
+                "status": "cancelled",
+                "refund_amount_usd": refund_amount,
+                "policy_note": note,
+                "hours_before_departure": round(hours_before, 2),
+            }
+    except Exception as exc:
+        conn.rollback()
+        return False, str(exc)
+    finally:
+        conn.close()
 
 
 # ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────
 
+# Soft-delete accounts without removing historical travel records.
+def execute_deactivate_user(user_id: str) -> bool:
+    """Soft delete a user account while keeping bookings, payments, and feedback history."""
+    sql = """
+        UPDATE registered_users
+        SET is_active = FALSE,
+            deactivated_at = COALESCE(deactivated_at, NOW())
+        WHERE user_id = %s
+          AND is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (user_id,))
+            return cur.rowcount > 0
+
+
+# Cancel a metro trip owned by a user without deleting the row.
+def execute_cancel_metro_trip(trip_id: str, user_id: str) -> bool:
+    """Soft delete/cancel a metro trip record owned by a user."""
+    sql = """
+        UPDATE metro_trips trip
+        SET status = 'cancelled',
+            cancelled_at = COALESCE(cancelled_at, NOW())
+        FROM registered_users users
+        WHERE users.id = trip.user_pk
+          AND trip.trip_id = %s
+          AND users.user_id = %s
+          AND trip.status <> 'cancelled'
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (trip_id, user_id))
+            return cur.rowcount > 0
+
+
+# Register a customer profile and matching auth row in one transaction.
 def register_user(
     email: str,
     first_name: str,
     surname: str,
-    year_of_birth: int,
+    birth_year: int,
+    birth_month: int,
+    birth_day: int,
     password: str,
     secret_question: str,
     secret_answer: str,
@@ -268,37 +1049,171 @@ def register_user(
     Register a new user.
     Returns (True, user_id) on success or (False, error_message) on failure.
 
-    NOTE: passwords are stored as plain text here intentionally for teaching
-    purposes. In production, replace with a salted hash (e.g. bcrypt).
+    Passwords are stored as Argon2id hashes.
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    email = _normalise_email(email)
+    conn = psycopg2.connect(PG_DSN)
+    conn.autocommit = False
+    try:
+        date_of_birth = date(birth_year, birth_month, birth_day)
+        with conn.cursor() as cur:
+            cur.execute("LOCK TABLE registered_users IN SHARE ROW EXCLUSIVE MODE")
+            user_id = _gen_user_id(cur)
+            cur.execute(
+                """
+                INSERT INTO registered_users (
+                    user_id,
+                    first_name,
+                    surname,
+                    email,
+                    date_of_birth,
+                    registered_at,
+                    is_active
+                )
+                VALUES (%s, %s, %s, %s, %s, NOW(), TRUE)
+                RETURNING id
+                """,
+                (
+                    user_id,
+                    first_name,
+                    surname,
+                    email,
+                    date_of_birth,
+                ),
+            )
+            user_pk = cur.fetchone()[0]
+            cur.execute(
+                """
+                INSERT INTO user_auth_credentials (
+                    user_pk,
+                    password_hash,
+                    secret_question,
+                    secret_answer
+                )
+                VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    user_pk,
+                    PASSWORD_HASHER.hash(password),
+                    secret_question,
+                    secret_answer,
+                ),
+            )
+            conn.commit()
+            return True, user_id
+    except psycopg2.IntegrityError as exc:
+        conn.rollback()
+        return False, exc.diag.message_primary
+    except Exception as exc:
+        conn.rollback()
+        return False, str(exc)
+    finally:
+        conn.close()
 
 
+# Verify Argon2 password hash and return non-sensitive user fields.
 def login_user(email: str, password: str) -> Optional[dict]:
     """
     Verify credentials. Returns a user dict on success or None on failure.
-    Dict keys: user_id, email, full_name, first_name, surname, phone, date_of_birth, is_active.
+    Dict keys: user_id, email, full_name, first_name, surname, phone,
+    date_of_birth, birth_month, birth_day, is_active.
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    email = _normalise_email(email)
+    sql = """
+        SELECT
+            users.user_id,
+            users.email,
+            users.first_name || ' ' || users.surname AS full_name,
+            users.first_name,
+            users.surname,
+            users.phone,
+            users.date_of_birth,
+            EXTRACT(MONTH FROM users.date_of_birth)::int AS birth_month,
+            EXTRACT(DAY FROM users.date_of_birth)::int AS birth_day,
+            users.is_active,
+            auth.password_hash
+        FROM registered_users users
+        JOIN user_auth_credentials auth
+            ON auth.user_pk = users.id
+        WHERE users.email = %s
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (email,))
+            row = cur.fetchone()
+            if row is None or not row["is_active"]:
+                return None
+            try:
+                if not PASSWORD_HASHER.verify(row["password_hash"], password):
+                    return None
+            except (VerifyMismatchError, VerificationError):
+                return None
+            result = dict(row)
+            result.pop("password_hash", None)
+            return result
 
 
+# Retrieve the account recovery question for an active email.
 def get_user_secret_question(email: str) -> Optional[str]:
     """Return the secret question for a registered email, or None if not found."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    email = _normalise_email(email)
+    sql = """
+        SELECT auth.secret_question
+        FROM registered_users users
+        JOIN user_auth_credentials auth
+            ON auth.user_pk = users.id
+        WHERE users.email = %s
+          AND users.is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (email,))
+            row = cur.fetchone()
+            return row[0] if row else None
 
 
+# Check the stored recovery answer for password-reset flow.
 def verify_secret_answer(email: str, answer: str) -> bool:
     """Return True if the provided answer matches the stored secret answer (case-insensitive)."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    email = _normalise_email(email)
+    sql = """
+        SELECT auth.secret_answer
+        FROM registered_users users
+        JOIN user_auth_credentials auth
+            ON auth.user_pk = users.id
+        WHERE users.email = %s
+          AND users.is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (email,))
+            row = cur.fetchone()
+            if row is None:
+                return False
+            return row[0].strip().lower() == answer.strip().lower()
 
 
+# Replace a user's password hash after successful recovery.
 def update_password(email: str, new_password: str) -> bool:
     """Update the password for a user. Returns True if the row was updated."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    email = _normalise_email(email)
+    sql = """
+        UPDATE user_auth_credentials auth
+        SET password_hash = %s
+        FROM registered_users users
+        WHERE users.id = auth.user_pk
+          AND users.email = %s
+          AND users.is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (PASSWORD_HASHER.hash(new_password), email))
+            return cur.rowcount > 0
 
 
 # ── VECTOR / RAG QUERIES — do not modify ─────────────────────────────────────
 
+# Search embedded policy/rule documents for help-desk style questions.
 def query_policy_vector_search(embedding: list[float], top_k: int = VECTOR_TOP_K) -> list[dict]:
     """
     Find the most relevant policy documents for a given query embedding.
@@ -328,6 +1243,7 @@ def query_policy_vector_search(embedding: list[float], top_k: int = VECTOR_TOP_K
             return [dict(row) for row in cur.fetchall()]
 
 
+# Store one embedded policy document during vector seeding.
 def store_policy_document(
     title: str,
     category: str,
